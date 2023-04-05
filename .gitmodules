@@ -1,0 +1,15 @@
+[submodule "dpdk"]
+	path = dpdk
+	url = http://dpdk.org/git/dpdk
+[submodule "spdk"]
+	path = spdk
+	url = https://github.com/spdk/spdk
+[submodule "rdma-core"]
+	path = rdma-core
+	url = https://github.com/linux-rdma/rdma-core
+[submodule "apps/storage_service/snappy"]
+	path = apps/storage_service/snappy
+	url = https://github.com/google/snappy.git
+[submodule "deps/pcm"]
+	path = deps/pcm
+	url = https://github.com/opcm/pcm.git

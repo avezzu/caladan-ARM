@@ -1,0 +1,41 @@
+name: MSVC Windows build
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+    branches: [ '**' ]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+
+    runs-on: ci-windows
+    if: ${{ github.repository != 'opcm/pcm' }}
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Preparation
+      run: |
+        cd ${{github.workspace}}\src
+        git clone https://github.com/simdjson/simdjson.git
+    - name: Configure CMake
+      run: |
+        if (Test-Path ${{github.workspace}}\build){ Remove-Item ${{github.workspace}}\build -Recurse }
+        cmake -B ${{github.workspace}}\build
+    - name: Build
+      run: |
+        cmake --build ${{github.workspace}}\build --config ${{env.BUILD_TYPE}} --parallel
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1.0.2
+    - name: Build MSR driver
+      run: |
+        chdir ${{github.workspace}}\src\WinMSRDriver
+        msbuild MSR.vcxproj /p:Configuration=Release,Platform=x64 /t:Clean,Build /m
+    - name: upload-artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: PCMforWindows
+        path: build/bin/**/*
