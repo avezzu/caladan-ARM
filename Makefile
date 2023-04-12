@@ -30,9 +30,9 @@ runtime_asm = $(wildcard runtime/*.S)
 runtime_obj = $(runtime_src:.c=.o) $(runtime_asm:.S=.o)
 
 # test cases
-#test_src = $(wildcard tests/*.c)
-#test_obj = $(test_src:.c=.o)
-#test_targets = $(basename $(test_src))
+test_src = $(wildcard tests/*.c)
+test_obj = $(test_src:.c=.o)
+test_targets = $(basename $(test_src))
 
 
 # pcm lib

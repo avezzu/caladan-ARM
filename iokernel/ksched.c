@@ -36,8 +36,8 @@ int ksched_init(void)
 {
 	char *ksched_addr;
 	int i;
-	/*
-	/* first open the file descriptor 
+	
+	/* first open the file descriptor */
 	ksched_fd = open("/dev/ksched", O_RDWR);
 	if (ksched_fd < 0) {
 		log_err("Could not find ksched kernel module (%s). Please ensure that "
@@ -46,18 +46,18 @@ int ksched_init(void)
 		return -errno;
 	}
 
-	/* then map the shared memory region with the kernel 
+	/* then map the shared memory region with the kernel */
 	ksched_addr = mmap(NULL, sizeof(struct ksched_shm_cpu) * NCPU,
 		    PROT_READ | PROT_WRITE, MAP_SHARED, ksched_fd, 0);
 	if (ksched_addr == MAP_FAILED)
 		return -errno;
 
-	/* then initialize the generation numbers 
+	/* then initialize the generation numbers */
 	ksched_shm = (struct ksched_shm_cpu *)ksched_addr;
 	for (i = 0; i < NCPU; i++) {
 		ksched_gens[i] = load_acquire(&ksched_shm[i].last_gen);
 		ksched_idle_hint(i, 0);
 	}
-	*/
+	
         return 0;
 }

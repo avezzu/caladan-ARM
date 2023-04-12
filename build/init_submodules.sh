@@ -66,20 +66,3 @@ export EXTRA_CFLAGS=
 export EXTRA_LDFLAGS=
 export PKG_CONFIG_PATH=
 
-
-echo building SPDK
-cd spdk
-git apply ../build/spdk.patch
-./configure --with-dpdk=$PWD/../dpdk/build/
-make -j $CORES
-cd ..
-
-echo building PCM
-cd deps/pcm
-rm -f src/pcm-caladan.cpp
-patch -p1 -N < ../../build/pcm.patch
-mkdir -p build
-cd build
-cmake ..
-make PCM_STATIC -j $CORES
-cd ../../../

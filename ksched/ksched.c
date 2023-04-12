@@ -1,20 +1,44 @@
-#include <linux/sched.h>
+/*
+ * ksched.c - an accelerated scheduler interface for the IOKernel
+ */
+
+#include <asm/io.h>
+#include <asm/irq.h>
+#include <asm/local.h>
+
+#include <asm/set_memory.h>
+
+#include <asm/page.h>
+#include <asm/pgtable.h>
+#include <asm/tlbflush.h>
+#include <linux/capability.h>
+#include <linux/cdev.h>
+
+#include <linux/cpuidle.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/errno.h>
+#include <linux/fs.h>
+#include <linux/init.h>
+#include <linux/sort.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/types.h>
-#include <linux/cdev.h>
-#include <linux/vmalloc.h>
+#include <linux/moduleparam.h>
+#include <linux/mm.h>
 #include <linux/sched.h>
-#include <linux/percpu.h>
-#include <asm/local.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task.h>
+#include <linux/smp.h>
+#include <linux/uaccess.h>
+#include <linux/signal.h>
 #include <linux/version.h>
-#include <linux/cpuidle.h>
-
-
 
 #include "ksched.h"
+#include "../iokernel/pmc.h"
 
+
+#define CORE_PERF_GLOBAL_CTRL_ENABLE_PMC_0 (0x1)
+#define CORE_PERF_GLOBAL_CTRL_ENABLE_PMC_1 (0x2)
 
 /* the character device that provides the ksched IOCTL interface */
 static struct cdev ksched_cdev;
@@ -23,14 +47,12 @@ static struct cdev ksched_cdev;
 static __read_mostly struct ksched_shm_cpu *shm;
 #define SHM_SIZE (NR_CPUS * sizeof(struct ksched_shm_cpu))
 
-
 struct ksched_percpu {
 	unsigned int		last_gen;
 	local_t			busy;
 	u64			last_sel;
 	struct task_struct	*running_task;
 };
-
 
 /* per-cpu data to coordinate context switching and signal delivery */
 static DEFINE_PER_CPU(struct ksched_percpu, kp);
@@ -40,6 +62,11 @@ enum {
 	UNPARKED
 };
 
+void mark_task_parked(struct task_struct *tsk)
+{
+	/* borrow the trace field here which is origally used by Ftrace */
+	tsk->trace = PARKED;
+}
 
 bool try_mark_task_unparked(struct task_struct *tsk) {
 	bool success = false;
@@ -52,29 +79,6 @@ bool try_mark_task_unparked(struct task_struct *tsk) {
 	return success;
 }
 
-
-static inline long get_granted_core_id(void)
-{
-	struct ksched_percpu *p = this_cpu_ptr(&kp);
-
-	if (unlikely(p->running_task == NULL ||
-		     p->running_task->pid != task_pid_vnr(current))) {
-		/* The thread is waken up by a user-sent signal instead of
-		 * the iokernel. In this case no core was granted. We should
-		 * put the thread back into sleep immediately after handling
-		 * the signal. */
-		return -ERESTARTSYS;
-	}
-
-	return smp_processor_id();
-}
-
-
-void mark_task_parked(struct task_struct *tsk)
-{
-	/* borrow the trace field here which is origally used by Ftrace */
-	tsk->trace = PARKED;
-}
 
 /**
  * ksched_lookup_task - retreives a task from a pid number
@@ -91,7 +95,6 @@ static struct task_struct *ksched_lookup_task(pid_t nr)
 		return NULL;
 	return pid_task(pid, PIDTYPE_PID);
 }
-
 
 static void ksched_next_tid(struct ksched_percpu *kp, int cpu, pid_t tid)
 {
@@ -144,6 +147,93 @@ static void ksched_next_tid(struct ksched_percpu *kp, int cpu, pid_t tid)
 	rcu_read_unlock();
 
 	return;
+}
+
+
+//is a kernel function that waits for a specific memory address to be modified by another CPU or device
+static int ksched_mwait_on_addr(const unsigned int *addr, unsigned int hint,
+				unsigned int val)
+{
+	unsigned int cur;
+
+	lockdep_assert_irqs_disabled();
+
+	/* first see if the condition is met without waiting */
+	cur = smp_load_acquire(addr);
+	while (cur == val)
+	{
+		cur = smp_load_acquire(addr);
+	}
+	
+	return cur;
+}
+
+
+//__cpuidle used to define ksched_idle as an idele state handler
+static int __attribute__((section(".cpuidle"))) ksched_idle(struct cpuidle_device *dev,
+				 struct cpuidle_driver *drv, int index)
+{
+	struct ksched_percpu *p;
+	struct ksched_shm_cpu *s;
+	unsigned long gen;
+	unsigned int hint;
+	pid_t tid;
+	int cpu;
+
+	lockdep_assert_irqs_disabled();
+
+	cpu = get_cpu();
+	p = this_cpu_ptr(&kp);
+	s = &shm[cpu];
+
+	/* check if we entered the idle loop with a process still active */
+	if (unlikely(p->running_task)) {
+		if (p->running_task->flags & PF_EXITING) {
+			put_task_struct(p->running_task);
+			p->running_task = NULL;
+		} else {
+			ksched_mwait_on_addr(&s->gen, 0, s->gen);
+			put_cpu();
+			return index;
+		}
+	}
+
+	/* mark the core as idle if a new request isn't waiting */
+	local_set(&p->busy, false);
+	if (s->busy && smp_load_acquire(&s->gen) == p->last_gen)
+		WRITE_ONCE(s->busy, false);
+
+	/* use the mwait instruction to efficiently wait for the next request */
+	hint = READ_ONCE(s->mwait_hint);
+	gen = ksched_mwait_on_addr(&s->gen, hint, p->last_gen);
+	if (gen != p->last_gen) {
+		tid = READ_ONCE(s->tid);
+		p->last_gen = gen;
+		ksched_next_tid(p, cpu, tid);
+		WRITE_ONCE(s->busy, p->running_task != NULL);
+		local_set(&p->busy, true);
+		smp_store_release(&s->last_gen, gen);
+	}
+
+	put_cpu();
+
+	return index;
+}
+
+static inline long get_granted_core_id(void)
+{
+	struct ksched_percpu *p = this_cpu_ptr(&kp);
+
+	if (unlikely(p->running_task == NULL ||
+		     p->running_task->pid != task_pid_vnr(current))) {
+		/* The thread is waken up by a user-sent signal instead of
+		 * the iokernel. In this case no core was granted. We should
+		 * put the thread back into sleep immediately after handling
+		 * the signal. */
+		return -ERESTARTSYS;
+	}
+
+	return smp_processor_id();
 }
 
 static long ksched_park(void)
@@ -203,7 +293,6 @@ park:
 	return get_granted_core_id();
 }
 
-
 static long ksched_start(void)
 {
 	/* put this task to sleep and reschedule so the next task can run */
@@ -224,40 +313,14 @@ static void ksched_deliver_signal(struct ksched_percpu *p, unsigned int signum)
 		send_sig(signum, p->running_task, 0);
 }
 
-/**
- * wrmsrl(MSR_P6_EVNTSEL0, sel);the first argument is the MSR address for the performance event selector register (MSR_P6_EVNTSEL0), and the second argument is the value to write to that register (sel).
- *  MSR is used to configure the performance counters to count specific events such as CPU cycles, cache misses, or instructions retired.
- * ksched_measure_pmc - read a performance counter
- * @sel: selects an x86 performance counter
- */
 
-
-static u64 ksched_measure_pmc(u64 sel)
-{
-	
-	/*this can no be directely transaltet on aarch64
-	struct ksched_percpu *p = this_cpu_ptr(&kp);
-	u64 val;
-
-	if (p->last_sel != sel) {
-		wrmsrl(MSR_P6_EVNTSEL0, sel);
-		p->last_sel = sel;
-	}
-	rdmsrl(MSR_P6_PERFCTR0, val);
-
-	return val;
-	*/
-
-	return 0;
-}
-
+//not sure if this is correct
 unsigned long long rdtsc_tmp(void)
 {
     unsigned long long val;
     asm volatile("mrs %0, CNTPCT_EL0" : "=r" (val));
     return val;
 }
-
 
 static void ksched_ipi(void *unused)
 {
@@ -276,14 +339,6 @@ static void ksched_ipi(void *unused)
 		smp_store_release(&s->sig, 0);
 	}
 
-	/* check if a performance counter has been requested */
-	tmp = smp_load_acquire(&s->pmc);
-	if (tmp != 0) {
-		s->pmcval = ksched_measure_pmc(READ_ONCE(s->pmcsel));
-		s->pmctsc = rdtsc_tmp();
-		smp_store_release(&s->pmc, 0);
-	}
-
 	put_cpu();
 }
 
@@ -297,7 +352,6 @@ static int get_user_cpu_mask(const unsigned long __user *user_mask_ptr,
 
 	return copy_from_user(new_mask, user_mask_ptr, len) ? -EFAULT : 0;
 }
-
 
 static long ksched_intr(struct ksched_intr_req __user *ureq)
 {
@@ -324,78 +378,8 @@ static long ksched_intr(struct ksched_intr_req __user *ureq)
 	return 0;
 }
 
-static int ksched_mwait_on_addr(const unsigned int *addr, unsigned int hint,
-				unsigned int val)
-{
-	unsigned int cur;
-
-	lockdep_assert_irqs_disabled();
-
-	/* first see if the condition is met without waiting */
-	cur = smp_load_acquire(addr);
-
-	//just do busywaiting instead
-	while(cur == val){
-		cur =  smp_load_acquire(addr);
-	}
-	return cur;
-}
-
-
-
-//__cpuidle used to define ksched_idle as an idele state handler
-static int __attribute__((section(".cpuidle"))) ksched_idle(struct cpuidle_device *dev,
-				 struct cpuidle_driver *drv, int index)
-{
-	struct ksched_percpu *p;
-	struct ksched_shm_cpu *s;
-	unsigned long gen;
-	unsigned int hint;
-	pid_t tid;
-	int cpu;
-
-	lockdep_assert_irqs_disabled();
-
-	cpu = get_cpu();
-	p = this_cpu_ptr(&kp);
-	s = &shm[cpu];
-
-	/* check if we entered the idle loop with a process still active */
-	if (unlikely(p->running_task)) {
-		if (p->running_task->flags & PF_EXITING) {
-			put_task_struct(p->running_task);
-			p->running_task = NULL;
-		} else {
-			ksched_mwait_on_addr(&s->gen, 0, s->gen);
-			put_cpu();
-			return index;
-		}
-	}
-
-	/* mark the core as idle if a new request isn't waiting */
-	local_set(&p->busy, false);
-	if (s->busy && smp_load_acquire(&s->gen) == p->last_gen)
-		WRITE_ONCE(s->busy, false);
-
-	/* use the mwait instruction to efficiently wait for the next request */
-	hint = READ_ONCE(s->mwait_hint);
-	gen = ksched_mwait_on_addr(&s->gen, hint, p->last_gen);
-	if (gen != p->last_gen) {
-		tid = READ_ONCE(s->tid);
-		p->last_gen = gen;
-		ksched_next_tid(p, cpu, tid);
-		WRITE_ONCE(s->busy, p->running_task != NULL);
-		local_set(&p->busy, true);
-		smp_store_release(&s->last_gen, gen);
-	}
-
-	put_cpu();
-
-	return index;
-}
-
-
-static long ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long
+ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	/* validate input */
 	if (unlikely(_IOC_TYPE(cmd) != KSCHED_MAGIC))
@@ -403,7 +387,6 @@ static long ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (unlikely(_IOC_NR(cmd) > KSCHED_IOC_MAXNR))
 		return -ENOTTY;
 
-	
 	switch (cmd) {
 	case KSCHED_IOC_START:
 		return ksched_start();
@@ -414,9 +397,9 @@ static long ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	default:
 		break;
 	}
+
 	return -ENOTTY;
 }
-
 
 static int ksched_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -436,7 +419,6 @@ static int ksched_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-
 static struct file_operations ksched_ops = {
 	.owner		= THIS_MODULE,
 	.mmap		= ksched_mmap,
@@ -445,56 +427,29 @@ static struct file_operations ksched_ops = {
 	.release	= ksched_release,
 };
 
-/* TODO: This is a total hack to make ksched work as a module */
-static struct cpuidle_state backup_state;
-static int backup_state_count;
+static struct cpuidle_driver ksched_driver = {
+    .name = "ksched_driver",
+    .owner = THIS_MODULE,
+    .states[0] = {
+        .enter = ksched_idle,
+        .exit_latency = 1,
+        .target_residency = 1,
+        .name = "ksched_idle",
+        .desc = "aarch64 ksched",
+    },
+    .state_count = 1,
+};
 
-static int __init ksched_cpuidle_hijack(void)
+static int __init ksched_init(void)
 {
-	struct cpuidle_driver *drv;
-
-	drv = cpuidle_get_driver();
-	if (!drv){
-		printk(KERN_INFO "ksched: failed with cpuidle_get_driver");
-		return -1;
-	}	
-	if (drv->state_count <= 0)
-		return -1;
-
-	cpuidle_pause_and_lock();
-	backup_state = drv->states[0];
-	backup_state_count = drv->state_count;
-	drv->states[0].enter = ksched_idle;
-	drv->state_count = 1;
-	cpuidle_resume_and_unlock();
-
-	return 0;
-}
-
-static void __exit ksched_cpuidle_unhijack(void)
-{
-	struct cpuidle_driver *drv;
-
-	drv = cpuidle_get_driver();
-	if (!drv)
-		return;
-
-	cpuidle_pause_and_lock();
-	drv->states[0] = backup_state;
-	drv->state_count = backup_state_count;
-	cpuidle_resume_and_unlock();
-}
-
-
-static int ksched_init(void)
-{	
 	dev_t devno_ksched = MKDEV(KSCHED_MAJOR, KSCHED_MINOR);
 	int ret;
+	
 	ret = register_chrdev_region(devno_ksched, 1, "ksched");
-	cdev_init(&ksched_cdev, &ksched_ops);
 	if (ret)
 		return ret;
-	
+
+	cdev_init(&ksched_cdev, &ksched_ops);
 	ret = cdev_add(&ksched_cdev, devno_ksched, 1);
 	if (ret)
 		goto fail_ksched_cdev_add;
@@ -506,15 +461,14 @@ static int ksched_init(void)
 	}
 	memset(shm, 0, SHM_SIZE);
 
-	
-	ret = ksched_cpuidle_hijack();
+	ret = cpuidle_register_driver(&ksched_driver);;
 	if (ret)
-		goto fail_hijack;
-	
-	printk(KERN_INFO "ksched: API V2 enabled");
+		goto reg_driver;
+
+	printk(KERN_INFO "ksched: API ported V2 enabled");
 	return 0;
 
-fail_hijack:
+reg_driver:
 	vfree(shm);
 fail_shm:
 	cdev_del(&ksched_cdev);
@@ -523,15 +477,14 @@ fail_ksched_cdev_add:
 	return ret;
 }
 
-static void ksched_exit(void)
-{	
+static void __exit ksched_exit(void)
+{
 	int cpu;
 	struct ksched_percpu *p;
 
-
 	dev_t devno_ksched = MKDEV(KSCHED_MAJOR, KSCHED_MINOR);
 
-	ksched_cpuidle_unhijack();
+	cpuidle_unregister_driver(&ksched_driver);
 	vfree(shm);
 	cdev_del(&ksched_cdev);
 	unregister_chrdev_region(devno_ksched, 1);
@@ -540,7 +493,7 @@ static void ksched_exit(void)
 		p = per_cpu_ptr(&kp, cpu);
 		if (p->running_task)
 			put_task_struct(p->running_task);
-	}	
+	}
 }
 
 module_init(ksched_init);

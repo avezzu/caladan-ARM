@@ -13,8 +13,8 @@
 
 /* used to define perthread variables */
 #define DEFINE_PERTHREAD(type, name) \
-    __thread typeof(type) __perthread_##name  //all __thread elements are stored in TLS
-    //__attribute__((section(".perthread"))) 
+    __thread typeof(type) __perthread_##name 
+
 
 /* used to make perthread variables externally available */
 #define DECLARE_PERTHREAD(type, name) \
@@ -48,7 +48,7 @@ static inline void *__perthread_get(void __perthread *key)
  * Returns a perthread variable.
  */
 #define perthread_get(var)					\
-	(*((typeof(__perthread_##var) *)(__perthread_get(&__perthread_##var))))
+	(*((typeof(__perthread_##var) *)(&__perthread_##var)))
 
 /**
  * thread_is_active - is the thread initialized?
