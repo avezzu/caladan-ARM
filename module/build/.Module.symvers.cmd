@@ -1,0 +1,1 @@
+cmd_/home/ubuntu/caladan-aarch64/module/build/Module.symvers := sed 's/ko$$/o/' /home/ubuntu/caladan-aarch64/module/build/modules.order | scripts/mod/modpost -m -a  -o /home/ubuntu/caladan-aarch64/module/build/Module.symvers -e -i Module.symvers   -T -

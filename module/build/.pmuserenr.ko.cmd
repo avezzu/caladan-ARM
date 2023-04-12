@@ -1,0 +1,1 @@
+cmd_/home/ubuntu/caladan-aarch64/module/build/pmuserenr.ko := ld -r -EL  -maarch64elf -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T scripts/module.lds -o /home/ubuntu/caladan-aarch64/module/build/pmuserenr.ko /home/ubuntu/caladan-aarch64/module/build/pmuserenr.o /home/ubuntu/caladan-aarch64/module/build/pmuserenr.mod.o;  true
