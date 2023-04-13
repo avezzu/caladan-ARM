@@ -88,6 +88,7 @@ static __noreturn void jmp_thread(thread_t *th)
 			cpu_relax();
 	}
 	th->thread_running = true;
+	printf("__jmp_thread was called\n");
 	__jmp_thread(&th->tf);
 }
 
@@ -112,6 +113,7 @@ static void jmp_thread_direct(thread_t *oldth, thread_t *newth)
 			cpu_relax();
 	}
 	newth->thread_running = true;
+	printf("__jmp_thread_direct was called\n");
 	__jmp_thread_direct(&oldth->tf, &newth->tf, &oldth->thread_running);
 }
 
@@ -129,7 +131,8 @@ static void jmp_runtime(runtime_fn_t fn)
 {
 	assert_preempt_disabled();
 	assert(thread_self() != NULL);
-
+	
+	printf("__jmp_runtime was called\n");
 	__jmp_runtime(&thread_self()->tf, fn, runtime_stack);
 }
 
@@ -141,7 +144,7 @@ static void jmp_runtime(runtime_fn_t fn)
 static __noreturn void jmp_runtime_nosave(runtime_fn_t fn)
 {
 	assert_preempt_disabled();
-
+	printf("__jmp_runtime_nosave was called\n");
 	__jmp_runtime_nosave(fn, runtime_stack);
 }
 
