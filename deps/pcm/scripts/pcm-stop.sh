@@ -1,2 +1,0 @@
-
-kill `cat pcm.pid`

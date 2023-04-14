@@ -1,4 +1,0 @@
-
-pcm "$@" &
-
-echo "$!" > pcm.pid

@@ -1,1 +1,0 @@
-cmd_/home/ubuntu/caladan-aarch64/module/build/modules.order := {   echo /home/ubuntu/caladan-aarch64/module/build/pmuserenr.ko; :; } | awk '!x[$$0]++' - > /home/ubuntu/caladan-aarch64/module/build/modules.order
