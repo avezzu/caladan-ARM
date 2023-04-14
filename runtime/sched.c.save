@@ -12,7 +12,6 @@
 #include <base/tcache.h>
 #include <base/slab.h>
 #include <base/log.h>
-
 #include <runtime/sync.h>
 #include <runtime/thread.h>
 
@@ -89,8 +88,8 @@ static __noreturn void jmp_thread(thread_t *th)
 			cpu_relax();
 	}
 	th->thread_running = true;
-	preempt_cnt--;
-	__jmp_thread(&th->tf, preempt_cnt);
+	printf("__jmp_thread was called\n");
+	__jmp_thread(&th->tf);
 }
 
 /**
@@ -114,8 +113,8 @@ static void jmp_thread_direct(thread_t *oldth, thread_t *newth)
 			cpu_relax();
 	}
 	newth->thread_running = true;
-	preempt_cnt--;
-	__jmp_thread_direct(&oldth->tf, &newth->tf, &oldth->thread_running, preempt_cnt);
+	printf("__jmp_thread_direct was called\n");
+	__jmp_thread_direct(&oldth->tf, &newth->tf, &oldth->thread_running);
 }
 
 /**
@@ -133,6 +132,7 @@ static void jmp_runtime(runtime_fn_t fn)
 	assert_preempt_disabled();
 	assert(thread_self() != NULL);
 	
+	printf("__jmp_runtime was called\n");
 	__jmp_runtime(&thread_self()->tf, fn, runtime_stack);
 }
 
@@ -144,6 +144,7 @@ static void jmp_runtime(runtime_fn_t fn)
 static __noreturn void jmp_runtime_nosave(runtime_fn_t fn)
 {
 	assert_preempt_disabled();
+	printf("__jmp_runtime_nosave was called\n");
 	__jmp_runtime_nosave(fn, runtime_stack);
 }
 
@@ -323,7 +324,7 @@ static __noinline bool do_watchdog(struct kthread *l)
 static __noreturn __noinline void schedule(void)
 {
 	
-	struct kthread *r = NULL, *l = myk();
+struct kthread *r = NULL, *l = myk();
 	uint64_t start_tsc;
 	thread_t *th = NULL;
 	unsigned int start_idx;

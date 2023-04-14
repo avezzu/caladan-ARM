@@ -50,7 +50,7 @@ static __read_mostly struct ksched_shm_cpu *shm;
 struct ksched_percpu {
 	unsigned int		last_gen;
 	local_t			busy;
-	u64			last_sel;
+        u64			last_sel;
 	struct task_struct	*running_task;
 };
 
@@ -230,6 +230,8 @@ static inline long get_granted_core_id(void)
 		 * the iokernel. In this case no core was granted. We should
 		 * put the thread back into sleep immediately after handling
 		 * the signal. */
+	  printk(KERN_INFO "p == NULL, %d", p->running_task == NULL);
+	  printk(KERN_INFO "error happened in get_granted_core_id");
 		return -ERESTARTSYS;
 	}
 
@@ -295,10 +297,16 @@ park:
 
 static long ksched_start(void)
 {
+	
+	printk(KERN_INFO "ksched_start was called");
 	/* put this task to sleep and reschedule so the next task can run */
 	__set_current_state(TASK_INTERRUPTIBLE);
 	mark_task_parked(current);
+	printk(KERN_INFO "calling schedule");
+	printk(KERN_INFO "calling schedule");
 	schedule();
+	printk(KERN_INFO "returned from schedule");
+	printk(KERN_INFO "returned from schedule");
 	__set_current_state(TASK_RUNNING);
 	return get_granted_core_id();
 }
@@ -318,7 +326,7 @@ static void ksched_deliver_signal(struct ksched_percpu *p, unsigned int signum)
 unsigned long long rdtsc_tmp(void)
 {
     unsigned long long val;
-    asm volatile("mrs %0, CNTPCT_EL0" : "=r" (val));
+    asm volatile("mrs %0, CNTVCT_EL0" : "=r" (val));
     return val;
 }
 
@@ -381,6 +389,7 @@ static long ksched_intr(struct ksched_intr_req __user *ureq)
 static long
 ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	
 	/* validate input */
 	if (unlikely(_IOC_TYPE(cmd) != KSCHED_MAGIC))
 		return -ENOTTY;
@@ -389,7 +398,11 @@ ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case KSCHED_IOC_START:
-		return ksched_start();
+		printk(KERN_INFO "started");
+		long ret = ksched_start();
+		printk(KERN_INFO "ret: %Ld", ret);
+		printk(KERN_INFO "end");
+		return ret;
 	case KSCHED_IOC_PARK:
 		return ksched_park();
 	case KSCHED_IOC_INTR:
@@ -440,6 +453,7 @@ static struct cpuidle_driver ksched_driver = {
     .state_count = 1,
 };
 
+
 static int __init ksched_init(void)
 {
 	dev_t devno_ksched = MKDEV(KSCHED_MAJOR, KSCHED_MINOR);
@@ -461,7 +475,7 @@ static int __init ksched_init(void)
 	}
 	memset(shm, 0, SHM_SIZE);
 
-	ret = cpuidle_register_driver(&ksched_driver);;
+	ret = cpuidle_register_driver(&ksched_driver);
 	if (ret)
 		goto reg_driver;
 
@@ -485,6 +499,7 @@ static void __exit ksched_exit(void)
 	dev_t devno_ksched = MKDEV(KSCHED_MAJOR, KSCHED_MINOR);
 
 	cpuidle_unregister_driver(&ksched_driver);
+     
 	vfree(shm);
 	cdev_del(&ksched_cdev);
 	unregister_chrdev_region(devno_ksched, 1);

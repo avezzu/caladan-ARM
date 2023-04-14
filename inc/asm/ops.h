@@ -24,15 +24,6 @@ struct cpuid_info {
 };
 
 
-//DONT FORGET TO SET THE nobw flag
-/* 
-static inline void cpuid(int leaf, struct cpuid_info *regs)
-{
-	asm volatile("cpuid" : "=a" (regs->eax), "=b" (regs->ebx), "=c" (regs->ecx), "=d" (regs->edx) : "a" (leaf));
-}
-*/
-
-
 
 static inline uint64_t rdtsc(void)
 {
@@ -41,29 +32,29 @@ static inline uint64_t rdtsc(void)
 	return __builtin_ia32_rdtsc();
 #  endif
 #else
-	uint64_t a, d;
-	asm volatile("mrrc p15, 0, %0, %1, c9" : "=r" (a), "=r" (d));
-	return (d << 32) | a;
+	uint64_t val;
+  	asm volatile("mrs %0, CNTVCT_EL0" : "=r" (val));
+	return val;
 #endif
 }
 
 static inline uint64_t rdtscp(uint32_t *auxp)
 {
 	uint64_t ret;
-	uint32_t c;
+	uint32_t c = 8;
 
 #if __GNUC_PREREQ(10, 0)
 #  if __has_builtin(__builtin_ia32_rdtscp)
 	ret = __builtin_ia32_rdtscp(&c);
 #  endif
 #else
-	 asm volatile (
-        "mrs %0, cntpct_el0\n\t"  
+	/*asm volatile (  
         "mrs %1, tpidr_el1\n\t"    
-        : "=r" (ret), "=r" (c)   
+        :"=r" (c)   
         :                          
         : "memory"                
-    	);
+    	);*/
+  	asm volatile("mrs %0, CNTVCT_EL0" : "=r" (ret));
 #endif
 
 	if (auxp)

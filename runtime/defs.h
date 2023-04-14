@@ -115,10 +115,11 @@ struct thread {
 typedef void (*runtime_fn_t)(void);
 
 /* assembly helper routines from switch.S */
-extern void __jmp_thread(struct thread_tf *tf) __noreturn;
+extern void __jmp_thread(struct thread_tf *tf, int preempt_cnt) __noreturn;
 extern void __jmp_thread_direct(struct thread_tf *oldtf,
 				struct thread_tf *newtf,
-				unsigned int *thread_running);
+				unsigned int *thread_running,
+				int preempt_cnt);
 extern void __jmp_runtime(struct thread_tf *tf, runtime_fn_t fn,
 			  void *stack);
 extern void __jmp_runtime_nosave(runtime_fn_t fn, void *stack) __noreturn;
@@ -167,10 +168,10 @@ static inline void assert_rsp_aligned(uint64_t rsp)
 	 * The stack must be 16-byte aligned at process entry according to
 	 * the System V Application Binary Interface (section 3.4.1).
 	 *
-	 * The callee assumes a return address has been pushed on the aligned
-	 * stack by CALL, so we look for an 8 byte offset.
+	 * On arm the LR register is used to store the return address, therefore the stack must always be
+	 * 16 byte alligned
 	 */
-	assert(rsp % RSP_ALIGNMENT == sizeof(void *));
+	assert(rsp % RSP_ALIGNMENT == 0);
 }
 
 /**
@@ -184,8 +185,8 @@ static inline uint64_t stack_init_to_rsp(struct stack *s, void (*exit_fn)(void))
 {
 	uint64_t rsp;
 
-	s->usable[STACK_PTR_SIZE - 1] = (uintptr_t)exit_fn;
-	rsp = (uint64_t)&s->usable[STACK_PTR_SIZE - 1];
+	s->usable[STACK_PTR_SIZE - 2] = (uintptr_t)exit_fn;
+	rsp = (uint64_t)&s->usable[STACK_PTR_SIZE - 2];
 	assert_rsp_aligned(rsp);
 	return rsp;
 }

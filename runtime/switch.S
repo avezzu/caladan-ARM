@@ -56,7 +56,7 @@ __jmp_thread:
 	
 	ldr x3, [x0, _SP]
 	mov sp, x3
-	ldr x1, [x0, _PC]
+	ldr x2, [x0, _PC]
 
 	/* restore callee regs */
 	ldr x19, [x0, _X19]
@@ -76,15 +76,10 @@ __jmp_thread:
 	ldr x0, [x0, _X0] /* ARG0 */
 
 	/* re-enable preemption */
-	adr x4, :tlsdesc:preempt_cnt
-	ldr x2, [x4]
-	sub x2, x2, #1
-	str x2, [x4]
-	cbz x2, label1
+	cbz x1, label1
 
 	/* jump into trap frame */
-	ldr x3, [x1]
-	br x3
+	br x2
 	nop
 
 label1:	/* cold-path, save RIP and park the kthread */
@@ -102,8 +97,7 @@ label1:	/* cold-path, save RIP and park the kthread */
 	ldr x0, [sp], #8
 	ldr x1, [sp], #8
 	
-	ldr x3, [x1]
-	br x3
+	br x1
 
 /**
  * __jmp_thread_direct - directly switches from one thread to the next
@@ -141,8 +135,8 @@ __jmp_thread_direct:
 	str x30, [x0, _X30]
 
 	/* restore ip and stack */
-	ldr x3, [x1, _SP]
-	mov sp, x3
+	ldr x7, [x1, _SP]
+	mov sp, x7
 	ldr x4, [x1, _PC]
 	
 	/* clear the stack busy flag */
@@ -165,16 +159,12 @@ __jmp_thread_direct:
 	ldr x0, [x1, _X0] /* ARG0 */
 
 	/* re-enable preemption */
-
-	adr x3, :tlsdesc:preempt_cnt
-	ldr x5, [x3]
-	sub x5, x5, #1
-	str x5, [x3]
-	cbz x5, label2
+	
+	sub x3, x3, #1
+	cbz x3, label2
 
 	/* jump into trap frame */
-	ldr x3, [x4]
-	br x3
+	br x4
 	nop
 
 label2:	/* cold-path, save RIP and park the kthread */
@@ -192,8 +182,7 @@ label2:	/* cold-path, save RIP and park the kthread */
 	ldr x0, [sp], #8
 	ldr x4, [sp], #8
 	
-	ldr x3, [x4]
-	br x3
+	br x4
 
 /**
  * __jmp_runtime - saves the current trap frame and jumps to a function in the
@@ -234,8 +223,7 @@ __jmp_runtime:
 	mov sp, x2
 
 	/* jump into runtime code */
-	ldr x3, [x1]
-	br x3
+	br x1
 
 /**
  * __jmp_runtime_nosave - jumps to a function in the runtime without saving the
@@ -255,8 +243,4 @@ __jmp_runtime_nosave:
 	/* jump into runtime function */
 	mov sp, x1
 	mov x1, x0
-
-	/* jump into runtime code */
-	ldr x4, [x1]
-	br x4
-
+	br x1

@@ -30,6 +30,15 @@ static void main_handler(void *arg)
 	}
 }
 
+static void handler(void *arg)
+{
+  
+  FILE *f = fopen("//home//ubuntu//caladan-aarch64//tests//text.txt", "w");
+  fprintf(f, "Hello World!");
+  fclose(f);
+}
+
+
 int main(int argc, char *argv[])
 {
 	int ret;
@@ -39,7 +48,7 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 	}
 
-	ret = runtime_init(argv[1], main_handler, NULL);
+	ret = runtime_init(argv[1], handler, NULL);
 	if (ret) {
 		printf("failed to start runtime\n");
 		return ret;
