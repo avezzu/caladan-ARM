@@ -821,6 +821,7 @@ thread_t *thread_create(thread_fn_t fn, void *arg)
 		return NULL;
 
 	th->tf.sp = stack_init_to_rsp(th->stack, thread_exit);
+	th->tf.x30 = (uint64_t)thread_exit;
 	th->tf.x0 = (uint64_t)arg;
 	th->tf.x29 = (uint64_t)0; /* just in case base pointers are enabled */
 	th->tf.pc = (uint64_t)fn;
@@ -846,6 +847,7 @@ thread_t *thread_create_with_buf(thread_fn_t fn, void **buf, size_t buf_len)
 
 	th->tf.sp = stack_init_to_rsp_with_buf(th->stack, &ptr, buf_len,
 						thread_exit);
+	th->tf.x30 = (uint64_t)thread_exit;
 	th->tf.x0 = (uint64_t)ptr;
 	th->tf.x29 = (uint64_t)0; /* just in case base pointers are enabled */
 	th->tf.pc = (uint64_t)fn;
