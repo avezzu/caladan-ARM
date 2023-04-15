@@ -1,1 +1,1 @@
-sudo ./iokerneld simple noht nobw numanode 36
+sudo ./iokerneld ias numanode 36

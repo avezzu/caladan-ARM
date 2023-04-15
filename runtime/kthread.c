@@ -234,15 +234,14 @@ void kthread_park(bool voluntary)
 void kthread_wait_to_attach(void)
 {
 	struct kthread *k = myk();
-	int s = 2;
-
-	/*
-	do {
+	int s = 5;
+	/*do {
 	  
 		s = ioctl(ksched_fd, KSCHED_IOC_START, 0);
 	    
 	} while (s < 0);
 	*/
+	//log_info("s: %d", s);
 	k->curr_cpu = s;
 	store_release(&cpu_map[s].recent_kthread, k);
 

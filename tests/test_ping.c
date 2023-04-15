@@ -32,10 +32,11 @@ static void main_handler(void *arg)
 
 static void handler(void *arg)
 {
-  
-  FILE *f = fopen("//home//ubuntu//caladan-aarch64//tests//text.txt", "w");
-  fprintf(f, "Hello World!");
-  fclose(f);
+  log_info("hello from process");
+  //FILE *f = fopen("//home//ubuntu//caladan-aarch64//tests//text.txt", "w");
+  //fprintf(f, "Hello World!");
+  //fclose(f);
+  return;
 }
 
 

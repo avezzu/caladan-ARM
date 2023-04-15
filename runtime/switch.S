@@ -89,7 +89,7 @@ label1:	/* cold-path, save RIP and park the kthread */
 	str x15, [sp, #-8]!
 
 	mov	x15, sp
-	sub sp, sp, #16 /* ensure correct stack alignment */
+	and sp, x15, #0xffffffffffffff0 /* ensure correct stack alignment */
 	bl preempt
 	mov	sp, x15 /* restore SP */
 
@@ -135,8 +135,8 @@ __jmp_thread_direct:
 	str x30, [x0, _X30]
 
 	/* restore ip and stack */
-	ldr x7, [x1, _SP]
-	mov sp, x7
+	ldr x5, [x1, _SP]
+	mov sp, x5
 	ldr x4, [x1, _PC]
 	
 	/* clear the stack busy flag */
@@ -159,8 +159,7 @@ __jmp_thread_direct:
 	ldr x0, [x1, _X0] /* ARG0 */
 
 	/* re-enable preemption */
-	
-	sub x3, x3, #1
+
 	cbz x3, label2
 
 	/* jump into trap frame */
@@ -174,7 +173,7 @@ label2:	/* cold-path, save RIP and park the kthread */
 	str x15, [sp, #-8]!
 
 	mov	x15, sp
-	sub sp, sp, #16 /* ensure correct stack alignment */
+	and sp, x15, #0xffffffffffffff0 /* ensure correct stack alignment */
 	bl preempt
 	mov	sp, x15 /* restore SP */
 

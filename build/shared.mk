@@ -7,10 +7,9 @@ endif
 # load configuration parameters
 include $(ROOT_PATH)/build/config
 
-CFLAGS += -fno-stack-protector
 # shared toolchain definitions
 INC = -I$(ROOT_PATH)/inc
-FLAGS  = -g -Wall -D_GNU_SOURCE  -fno-stack-protector $(INC)
+FLAGS  = -g -Wall -D_GNU_SOURCE $(INC)
 LDFLAGS = -T $(ROOT_PATH)/base/base.ld
 LD      = gcc
 CC      = gcc

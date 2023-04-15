@@ -3,7 +3,7 @@ include $(ROOT_PATH)/build/shared.mk
 
 DPDK_PATH = dpdk
 CHECKFLAGS = -D__CHECKER__ -Waddress-space
-CFLAGS += -fno-stack-protector -z execstack 
+#CFLAGS += -fno-stack-protector -z execstack 
 ifneq ($(TCP_RX_STATS),)
 CFLAGS += -DTCP_RX_STATS
 endif
@@ -61,10 +61,10 @@ libruntime.a: $(runtime_obj)
 
 iokerneld: $(iokernel_obj) libbase.a libnet.a base/base.ld 
 	$(LD) $(LDFLAGS) -o $@ $(iokernel_obj) libbase.a libnet.a $(DPDK_LIBS) \
-	-lpthread -lnuma -ldl -fno-stack-protector -z execstack 
+	-lpthread -lnuma -ldl  
 
 $(test_targets): $(test_obj) libbase.a libruntime.a libnet.a base/base.ld
-	$(LD) $(LDFLAGS) -o $@ $@.o $(RUNTIME_LIBS) -lz -fno-stack-protector -z execstack 
+	$(LD) $(LDFLAGS) -o $@ $@.o $(RUNTIME_LIBS) -lz 
 
 # general build rules for all targets
 src = $(base_src) $(net_src) $(runtime_src) $(iokernel_src) $(test_src)
