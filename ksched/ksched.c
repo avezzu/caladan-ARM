@@ -395,16 +395,22 @@ ksched_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return -ENOTTY;
 	if (unlikely(_IOC_NR(cmd) > KSCHED_IOC_MAXNR))
 		return -ENOTTY;
-
+	
+	int res;
+	long res1;
 	switch (cmd) {
 	case KSCHED_IOC_START:
-		printk(KERN_INFO "started");
-		long ret = ksched_start();
-		printk(KERN_INFO "ret: %Ld", ret);
-		printk(KERN_INFO "end");
-		return ret;
+		res = ksched_start();
+		if(copy_to_user((int*)arg, &res, sizeof(res))){
+			printk("ksched: failed copying data to user!\n");
+		}
+		return 0;
 	case KSCHED_IOC_PARK:
-		return ksched_park();
+		res1 = ksched_park();
+		if(copy_to_user((int*)arg, &res1, sizeof(res1))){
+			printk("ksched: failed copying data to user!\n");
+		}
+		return 0;
 	case KSCHED_IOC_INTR:
 		return ksched_intr((void __user *)arg);
 	default:
