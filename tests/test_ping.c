@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 	}
 
-	ret = runtime_init(argv[1], handler, NULL);
+	ret = runtime_init(argv[1], main_handler, NULL);
 	if (ret) {
 		printf("failed to start runtime\n");
 		return ret;

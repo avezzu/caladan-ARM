@@ -115,10 +115,9 @@ label1:	/* cold-path, save RIP and park the kthread */
 __jmp_thread_direct:
 
 	/* save ip and stack */
-	ldr x4, [sp]
-	str x4, [x0, _PC]
+	str x30, [x0, _PC]
 
-	add x4, sp, #8
+	mov x4, sp
 	str x4, [x0, _SP]
 
 	/* save callee regs */
@@ -212,10 +211,9 @@ __jmp_runtime:
 	str x30, [x0, _X30]
 
 	/* save ip and stack */
-	ldr x4, [sp]
-	str x4, [x0, _PC]
+	str x30, [x0, _PC]
 
-	add x4, sp, #8
+	mov x4, sp
 	str x4, [x0, _SP]
 
 	/* jump into runtime function */

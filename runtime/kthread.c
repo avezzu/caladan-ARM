@@ -89,14 +89,15 @@ static __always_inline void kthread_yield_to_iokernel(void)
 {
 	struct kthread *k = myk();
 	uint64_t last_core = k->curr_cpu;
-	ssize_t s;
+	ssize_t s = 3;
 
 	/* yield to the iokernel */
+	/*
 	do {
 		clear_preempt_needed();
 		ioctl(ksched_fd, KSCHED_IOC_PARK, &s);
 	} while (unlikely(s < 0 || preempt_cede_needed(k)));
-
+	*/
 	k->curr_cpu = s;
 	if (k->curr_cpu != last_core)
 		STAT(CORE_MIGRATIONS)++;
@@ -234,13 +235,14 @@ void kthread_park(bool voluntary)
 void kthread_wait_to_attach(void)
 {
 	struct kthread *k = myk();
-	int s;
+	int s = 3;
+	/*
 	do {
 	  
 		ioctl(ksched_fd, KSCHED_IOC_START, &s);
 	    
 	} while (s < 0);
-	
+	*/
 	k->curr_cpu = s;
 	store_release(&cpu_map[s].recent_kthread, k);
 

@@ -1,1 +1,1 @@
-sudo ./iokerneld ias numanode 36
+sudo ./iokerneld ias nobw noht numanode 36
