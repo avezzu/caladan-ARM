@@ -90,7 +90,7 @@ struct Switch {
 	int linearFDBtop;
 	int fdb_base;
 	int enhsp0;
-	int8_t fdb[64];
+	uint8_t fdb[64];
 	char switchinfo[64];
 };
 
@@ -105,7 +105,7 @@ struct Node {
 	int upport;
 	Node *upnode;
 	uint64_t nodeguid;	/* also portguid */
-	char nodedesc[64];
+	char nodedesc[IB_SMP_DATA_SIZE + 1];
 	char nodeinfo[64];
 };
 

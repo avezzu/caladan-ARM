@@ -75,26 +75,29 @@ static inline int qelr_wq_is_full(struct qelr_qp_hwq_info *info)
 }
 
 int qelr_query_device(struct ibv_context *context,
-		      struct ibv_device_attr *attr)
+		      const struct ibv_query_device_ex_input *input,
+		      struct ibv_device_attr_ex *attr, size_t attr_size)
 {
-	struct ibv_query_device cmd;
+	struct ib_uverbs_ex_query_device_resp resp;
+	size_t resp_size = sizeof(resp);
 	uint64_t fw_ver;
 	unsigned int major, minor, revision, eng;
-	int status;
+	int ret;
 
-	bzero(attr, sizeof(*attr));
-	status = ibv_cmd_query_device(context, attr, &fw_ver, &cmd,
-				      sizeof(cmd));
+	ret = ibv_cmd_query_device_any(context, input, attr, attr_size, &resp,
+				       &resp_size);
+	if (ret)
+		return ret;
 
+	fw_ver = resp.base.fw_ver;
 	major = (fw_ver >> 24) & 0xff;
 	minor = (fw_ver >> 16) & 0xff;
 	revision = (fw_ver >> 8) & 0xff;
 	eng = fw_ver & 0xff;
 
-	snprintf(attr->fw_ver, sizeof(attr->fw_ver),
+	snprintf(attr->orig_attr.fw_ver, sizeof(attr->orig_attr.fw_ver),
 		 "%d.%d.%d.%d", major, minor, revision, eng);
-
-	return status;
+	return 0;
 }
 
 int qelr_query_port(struct ibv_context *context, uint8_t port,
@@ -231,7 +234,8 @@ struct ibv_cq *qelr_create_cq(struct ibv_context *context, int cqe,
 	if (!cqe || cqe > cxt->max_cqes) {
 		DP_ERR(cxt->dbg_fp,
 		       "create cq: failed. attempted to allocate %d cqes but valid range is 1...%d\n",
-		       cqe, cqe > cxt->max_cqes);
+		       cqe, cxt->max_cqes);
+		errno = EINVAL;
 		return NULL;
 	}
 
@@ -2678,7 +2682,7 @@ err1:
 	free(srq);
 err0:
 	DP_ERR(cxt->dbg_fp,
-	       "create srq: failed to create %p. rc=%d\n", srq, rc);
+	       "create srq: failed to create. rc=%d\n", rc);
 	return NULL;
 }
 
@@ -2720,6 +2724,14 @@ static struct ibv_qp *create_qp(struct ibv_context *context,
 	int rc;
 
 	qelr_print_qp_init_attr(cxt, attrx);
+
+#define QELR_CREATE_QP_SUPP_ATTR_MASK \
+	(IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_XRCD)
+
+	if (!check_comp_mask(attrx->comp_mask, QELR_CREATE_QP_SUPP_ATTR_MASK)) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
 
 	qp = calloc(1, sizeof(*qp));
 	if (!qp)

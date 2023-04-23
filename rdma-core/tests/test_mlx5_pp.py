@@ -8,7 +8,7 @@ Test module for mlx5 packet pacing entry allocation.
 from pyverbs.providers.mlx5.mlx5dv import Mlx5PP, Mlx5Context, Mlx5DVContextAttr
 from pyverbs.pyverbs_error import PyverbsRDMAError, PyverbsUserError
 import pyverbs.providers.mlx5.mlx5_enums as e
-from tests.base import RDMATestCase
+from tests.mlx5_base import Mlx5RDMATestCase
 import unittest
 import struct
 import errno
@@ -27,7 +27,7 @@ class Mlx5PPRes:
         self.pps = []
 
 
-class Mlx5PPTestCase(RDMATestCase):
+class Mlx5PPTestCase(Mlx5RDMATestCase):
     def setUp(self):
         super().setUp()
         self.pp_res = Mlx5PPRes(self.dev_name)
@@ -54,3 +54,5 @@ class Mlx5PPTestCase(RDMATestCase):
             if ex.error_code == errno.EOPNOTSUPP or ex.error_code == errno.EPROTONOSUPPORT:
                 raise unittest.SkipTest('Packet pacing entry allocation is not supported')
             raise ex
+        finally:
+            self.pp_res.ctx.close()

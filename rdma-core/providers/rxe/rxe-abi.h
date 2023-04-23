@@ -39,11 +39,19 @@
 #include <rdma/rdma_user_rxe.h>
 #include <kernel-abi/rdma_user_rxe.h>
 
+DECLARE_DRV_CMD(urxe_create_ah, IB_USER_VERBS_CMD_CREATE_AH,
+		empty, rxe_create_ah_resp);
 DECLARE_DRV_CMD(urxe_create_cq, IB_USER_VERBS_CMD_CREATE_CQ,
+		empty, rxe_create_cq_resp);
+DECLARE_DRV_CMD(urxe_create_cq_ex, IB_USER_VERBS_EX_CMD_CREATE_CQ,
 		empty, rxe_create_cq_resp);
 DECLARE_DRV_CMD(urxe_create_qp, IB_USER_VERBS_CMD_CREATE_QP,
 		empty, rxe_create_qp_resp);
+DECLARE_DRV_CMD(urxe_create_qp_ex, IB_USER_VERBS_EX_CMD_CREATE_QP,
+		empty, rxe_create_qp_resp);
 DECLARE_DRV_CMD(urxe_create_srq, IB_USER_VERBS_CMD_CREATE_SRQ,
+		empty, rxe_create_srq_resp);
+DECLARE_DRV_CMD(urxe_create_srq_ex, IB_USER_VERBS_CMD_CREATE_XSRQ,
 		empty, rxe_create_srq_resp);
 DECLARE_DRV_CMD(urxe_modify_srq, IB_USER_VERBS_CMD_MODIFY_SRQ,
 		rxe_modify_srq_cmd, empty);

@@ -1,8 +1,165 @@
+rdma-core (46.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Jason Gunthorpe <jgg@obsidianresearch.com>  Tue, 03 Jan 2023 17:46:57 +0100
+
+rdma-core (44.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Add Microsoft Azure Network Adapter (MANA) RDMA provider
+    - util: mmio: fix build on MIPS with binutils >= 2.35
+  * Add 64-bit MIPS architectures to COHERENT_DMA_ARCHS (Closes: #1026088)
+  * debian/watch: Query api.github.com for release tarballs
+
+ -- Benjamin Drung <bdrung@ubuntu.com>  Tue, 03 Jan 2023 17:29:32 +0100
+
+rdma-core (43.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Install 70-persistent-ipoib.rules into docs instead of /etc
+      (Closes: #958385)
+
+ -- Benjamin Drung <bdrung@ubuntu.com>  Mon, 24 Oct 2022 18:21:42 +0200
+
+rdma-core (42.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update overrides for lintian 2.115.2
+  * Bump Standards-Version to 4.6.1
+
+ -- Benjamin Drung <bdrung@ubuntu.com>  Thu, 18 Aug 2022 15:24:14 +0200
+
+rdma-core (40.0-1) unstable; urgency=medium
+
+  [ Benjamin Drung ]
+  * New upstream release.
+  * Update my email address to @ubuntu.com
+
+  [ Heinrich Schuchardt ]
+  * Add riscv64 to COHERENT_DMA_ARCHS
+
+ -- Benjamin Drung <bdrung@ubuntu.com>  Mon, 16 May 2022 13:55:12 +0200
+
+rdma-core (39.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Remove i40iw provider conffile (Closes: #1000562)
+  * Update overrides for lintian 2.114
+  * Override obsolete-command-in-modprobe.d-file lintian error
+  * Override spare-manual-page lintian complaint
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Thu, 27 Jan 2022 19:57:04 +0100
+
+rdma-core (38.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * debian: Add __verbs_log to private libibverbs symbols
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Fri, 19 Nov 2021 17:57:18 +0100
+
+rdma-core (36.0-2) unstable; urgency=medium
+
+  * Revert installing systemd services in /usr/lib/systemd/system.
+    See #994388 for more details. (Closes: #997727)
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Tue, 09 Nov 2021 11:13:56 +0100
+
+rdma-core (36.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump Standards-Version to 4.6.0
+  * Install systemd services in /usr/lib/systemd/system
+  * Mark libraries as Multi-Arch: same
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Mon, 13 Sep 2021 14:09:01 +0200
+
+rdma-core (33.2-1) unstable; urgency=medium
+
+  * New upstream bug-fix release:
+    - libhns: Fix wrong range of a mask
+    - verbs: Fix attr_optional() when 'IOCTL_MODE=write' is used
+    - mlx4: Fix mlx4_read_clock returned errno value
+    - efa: Fix use of uninitialized query device response
+    - libhns: Avoid accessing NULL pointer when locking/unlocking CQ
+    - mlx5: Fix mlx5_read_clock returned errno value
+    - bnxt_re/lib: Check AH handler validity before use
+    - iwpmd: Check returned value of parse_iwpm_msg
+    - libhns: Bugfix for calculation of extended sge
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Thu, 03 Jun 2021 11:19:24 +0200
+
+rdma-core (33.1+git20210317-1) unstable; urgency=medium
+
+  * New upstream bug-fix snapshot:
+    - mlx5: Fix uuars to have the 'uar_mmap_offset' data
+    - pyverbs: Fix Mlx5 QP constructor
+    - efa: Fix DV extension clear check
+    - verbs: Fix possible port loop overflow
+    - ibacm: Fix possible port loop overflow
+    - mlx5: DR, Check new cap for isolated VL TC QP
+    - kernel-boot: Fix VF lookup
+    - mlx5: DR, Force QP drain on table creation
+    - libhns: Avoid double release of a pointer
+    - libhns: Correct definition of DB_BYTE_4_TAG_M
+    - libhns: Remove assert to check whether a pointer is NULL
+    - libhns: Remove the unnecessary mask on QPN of CQE
+    - libhns: Remove unnecessary mask of ownerbit
+    - libhns: Remove unnecessary barrier when poll cq
+    - rdma-ndd: fix udev racy issue for system with multiple InfiniBand HCAs
+    - verbs: Fix create CQ comp_mask check
+  * Update my email address
+
+ -- Benjamin Drung <benjamin.drung@ionos.com>  Mon, 12 Apr 2021 11:28:57 +0200
+
+rdma-core (33.1-1) unstable; urgency=medium
+
+  * New upstream bugfix release.
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Wed, 27 Jan 2021 14:32:48 +0100
+
+rdma-core (33.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Mon, 04 Jan 2021 16:41:27 +0100
+
 rdma-core (32.0-1) unstable; urgency=medium
 
   * New upstream release.
 
- -- Jason Gunthorpe <jgg@obsidianresearch.com>  Mon, 23 Dec 2019 13:36:56 +0100
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Fri, 30 Oct 2020 10:01:11 +0100
+
+rdma-core (31.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Switch to debhelper 13
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Wed, 19 Aug 2020 09:36:17 +0200
+
+rdma-core (29.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Tue, 14 Apr 2020 16:15:54 +0200
+
+rdma-core (28.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - rxe: Remove rxe_cfg
+  * Bump Standards-Version to 4.5.0
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Wed, 12 Feb 2020 17:21:38 +0100
+
+rdma-core (27.0-2) unstable; urgency=medium
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Repository, Repository-Browse.
+
+  [ Benjamin Drung ]
+  * debian: Remove obsolete ibverbs-providers conffiles (Closes: #947307)
+
+ -- Benjamin Drung <benjamin.drung@cloud.ionos.com>  Mon, 06 Jan 2020 13:23:44 +0100
 
 rdma-core (27.0-1) unstable; urgency=medium
 

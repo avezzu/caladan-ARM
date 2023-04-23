@@ -14,12 +14,15 @@ The userspace component of the libibverbs RDMA kernel drivers are included
 under the providers/ directory. Support for the following Kernel RDMA drivers
 is included:
 
+ - bnxt_re.ko
  - efa.ko
+ - erdma.ko
  - iw_cxgb4.ko
  - hfi1.ko
  - hns-roce.ko
- - i40iw.ko
+ - irdma.ko
  - ib_qib.ko
+ - mana_ib.ko
  - mlx4_ib.ko
  - mlx5_ib.ko
  - ib_mthca.ko
@@ -46,19 +49,21 @@ $ bash build.sh
 shared libraries. The build is configured to run all the programs 'in-place'
 and cannot be installed.
 
-NOTE: It is not currently easy to run from the build directory, the plugins
-only load from the system path.
-
 ### Debian Derived
 
 ```sh
 $ apt-get install build-essential cmake gcc libudev-dev libnl-3-dev libnl-route-3-dev ninja-build pkg-config valgrind python3-dev cython3 python3-docutils pandoc
 ```
 
-### Fedora
+Supported releases:
+
+* Debian 9 (stretch) or newer
+* Ubuntu 16.04 LTS (xenial) or newer
+
+### Fedora, CentOS 8
 
 ```sh
-$ dnf install cmake gcc libnl3-devel libudev-devel pkgconfig valgrind-devel ninja-build python3-devel python3-Cython python3-docutils pandoc
+$ dnf builddep redhat/rdma-core.spec
 ```
 
 NOTE: Fedora Core uses the name 'ninja-build' for the 'ninja' command.
@@ -69,7 +74,7 @@ NOTE: Fedora Core uses the name 'ninja-build' for the 'ninja' command.
 $ zypper install cmake gcc libnl3-devel libudev-devel ninja pkg-config valgrind-devel python3-devel python3-Cython python3-docutils pandoc
 ```
 
-## Building on CentOS 6/7, Amazon Linux 1/2
+## Building on CentOS 7, Amazon Linux 2
 
 Install required packages:
 
@@ -133,23 +138,9 @@ In your bug report, please include:
 
 # Submitting patches
 
-Patches should also be submitted to the <linux-rdma@vger.kernel.org>
-mailing list.  Please use unified diff form (the -u option to GNU diff),
-and include a good description of what your patch does and why it should
-be applied.  If your patch fixes a bug, please make sure to describe the
-bug and how your fix works.
+See [Contributing to rdma-core](Documentation/contributing.md).
 
-Make sure that your contribution can be licensed under the same
-license as the original code you are patching, and that you have all
-necessary permissions to release your work.
+# Stable branches
 
-## Azure Pipelines CI
-
-Submitted patches must pass the Azure Pipelines CI automatic builds without
-warnings.  A build similar to AZP can be run locally using docker and the
-'buildlib/cbuild' script.
-
-```sh
-$ buildlib/cbuild build-images azp
-$ buildlib/cbuild pkg azp
-```
+Stable versions are released regularly with backported fixes (see Documentation/stable.md)
+The current minimum version still maintained is 'v26.X'

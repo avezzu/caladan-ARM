@@ -15,3 +15,7 @@ insmod  $(dirname $0)/../ksched/build/ksched.ko
 mknod /dev/ksched c 280 0
 chmod uga+rwx /dev/ksched
 
+# reserve huge pages
+for n in /sys/devices/system/node/node*; do
+echo 5192 > ${n}/hugepages/hugepages-2048kB/nr_hugepages
+done

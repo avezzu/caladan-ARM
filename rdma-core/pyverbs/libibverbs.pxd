@@ -3,6 +3,7 @@
 
 include 'libibverbs_enums.pxd'
 from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t
+from posix.time cimport timespec
 
 cdef extern from 'infiniband/verbs.h':
 
@@ -114,6 +115,10 @@ cdef extern from 'infiniband/verbs.h':
         unsigned int    max_ops
         unsigned int    max_sge
 
+    cdef struct ibv_tm_cap:
+        uint32_t        max_num_tags
+        uint32_t        max_ops
+
     cdef struct ibv_cq_moderation_caps:
         unsigned int    max_cq_count
         unsigned int    max_cq_period
@@ -140,6 +145,7 @@ cdef extern from 'infiniband/verbs.h':
         unsigned long           max_dm_size
         ibv_pci_atomic_caps     pci_atomic_caps
         uint32_t                xrc_odp_caps
+        uint32_t                phys_port_cnt_ex
 
     cdef struct ibv_mw:
         ibv_context     *context
@@ -156,6 +162,7 @@ cdef extern from 'infiniband/verbs.h':
     cdef struct ibv_dm:
         ibv_context     *context
         unsigned int    comp_mask
+        uint32_t        handle
 
     cdef struct ibv_port_attr:
         ibv_port_state     state
@@ -277,6 +284,25 @@ cdef extern from 'infiniband/verbs.h':
         ibv_sge         *sg_list
         int             num_sge
 
+    cdef struct _add:
+        uint64_t        recv_wr_id
+        ibv_sge         *sg_list
+        int             num_sge
+        uint64_t        tag
+        uint64_t        mask
+
+    cdef struct _tm:
+        uint32_t        unexpected_cnt
+        uint32_t        handle
+        _add             add
+
+    cdef struct ibv_ops_wr:
+        uint64_t            wr_id
+        ibv_ops_wr          *next
+        ibv_ops_wr_opcode   opcode
+        int                 flags
+        _tm                  tm
+
     cdef struct rdma:
         unsigned long   remote_addr
         unsigned int    rkey
@@ -378,7 +404,7 @@ cdef extern from 'infiniband/verbs.h':
         ibv_pd          *pd
         ibv_xrcd        *xrcd
         ibv_cq          *cq
-        ibv_tm_caps      tm_cap
+        ibv_tm_cap      tm_cap
 
     cdef struct ibv_srq:
         ibv_context     *context
@@ -388,10 +414,16 @@ cdef extern from 'infiniband/verbs.h':
         unsigned int    events_completed
 
     cdef struct ibv_rwq_ind_table:
-        pass
+        ibv_context *context
+        int         ind_tbl_handle
+        int         ind_tbl_num
+        uint32_t    comp_mask
 
     cdef struct ibv_rx_hash_conf:
-        pass
+        uint8_t  rx_hash_function
+        uint8_t  rx_hash_key_len
+        uint8_t  *rx_hash_key
+        uint64_t rx_hash_fields_mask
 
     cdef struct ibv_qp_init_attr_ex:
         void                *qp_context
@@ -490,9 +522,125 @@ cdef extern from 'infiniband/verbs.h':
         uint32_t gid_type
         uint32_t ndev_ifindex
 
+    cdef struct ibv_flow:
+        uint32_t    comp_mask
+        ibv_context *context
+        uint32_t    handle
+
+    cdef struct ibv_flow_attr:
+        uint32_t           comp_mask
+        ibv_flow_attr_type type
+        uint16_t           size
+        uint16_t           priority
+        uint8_t            num_of_specs
+        uint8_t            port
+        uint32_t           flags
+
+    cdef struct ibv_flow_eth_filter:
+        uint8_t  dst_mac[6]
+        uint8_t  src_mac[6]
+        uint16_t ether_type
+        uint16_t vlan_tag
+
+    cdef struct ibv_flow_spec_eth:
+        ibv_flow_spec_type  type
+        uint16_t            size
+        ibv_flow_eth_filter val
+        ibv_flow_eth_filter mask
+
+    cdef struct ibv_flow_ipv4_ext_filter:
+        uint32_t  src_ip
+        uint32_t  dst_ip
+        uint8_t   proto
+        uint8_t   tos
+        uint8_t   ttl
+        uint8_t   flags
+
+    cdef struct ibv_flow_spec_ipv4_ext:
+        ibv_flow_spec_type       type
+        uint16_t                 size
+        ibv_flow_ipv4_ext_filter val
+        ibv_flow_ipv4_ext_filter mask
+
+    cdef struct ibv_flow_tcp_udp_filter:
+        uint16_t dst_port
+        uint16_t src_port
+
+    cdef struct ibv_flow_spec_tcp_udp:
+        ibv_flow_spec_type      type
+        uint16_t                size
+        ibv_flow_tcp_udp_filter val
+        ibv_flow_tcp_udp_filter mask
+
+    cdef struct ibv_flow_ipv6_filter:
+        uint8_t  src_ip[16]
+        uint8_t  dst_ip[16]
+        uint32_t flow_label
+        uint8_t  next_hdr
+        uint8_t  traffic_class
+        uint8_t  hop_limit
+
+    cdef struct ibv_flow_spec_ipv6:
+        ibv_flow_spec_type   type
+        uint16_t             size
+        ibv_flow_ipv6_filter val
+        ibv_flow_ipv6_filter mask
+
+    cdef struct ibv_flow_action:
+        ibv_context *context
+
+    cdef struct ibv_values_ex:
+        uint32_t comp_mask
+        timespec raw_clock
+
+    cdef union ibv_async_event_element:
+        ibv_cq  *cq;
+        ibv_qp  *qp;
+        ibv_srq *srq;
+        int     port_num;
+
+    cdef struct ibv_async_event:
+        ibv_async_event_element element
+        ibv_event_type event_type
+
+    cdef struct ibv_wq:
+        ibv_context *context
+        void         *wq_context
+        ibv_pd       *pd
+        ibv_cq       *cq
+        uint32_t     wq_num
+        uint32_t     handle
+        ibv_wq_state state
+        ibv_wq_type  wq_type
+        uint32_t     events_completed
+        uint32_t     comp_mask
+
+    cdef struct ibv_wq_init_attr:
+        void        *wq_context
+        ibv_wq_type wq_type
+        uint32_t    max_wr
+        uint32_t    max_sge
+        ibv_pd      *pd
+        ibv_cq      *cq
+        uint32_t    comp_mask
+        uint32_t    create_flags
+
+    cdef struct ibv_wq_attr:
+        uint32_t    attr_mask
+        ibv_wq_state wq_state
+        ibv_wq_state curr_wq_state
+        uint32_t    flags
+        uint32_t    flags_mask
+
+    cdef struct ibv_rwq_ind_table_init_attr:
+        uint32_t log_ind_tbl_size
+        ibv_wq   **ind_tbl
+        uint32_t comp_mask
+
     ibv_device **ibv_get_device_list(int *n)
     int ibv_get_device_index(ibv_device *device);
     void ibv_free_device_list(ibv_device **list)
+    const char *ibv_get_device_name(ibv_device *device)
     ibv_context *ibv_open_device(ibv_device *device)
     int ibv_close_device(ibv_context *context)
     int ibv_query_device(ibv_context *context, ibv_device_attr *device_attr)
@@ -507,6 +655,10 @@ cdef extern from 'infiniband/verbs.h':
     ibv_pd *ibv_alloc_pd(ibv_context *context)
     int ibv_dealloc_pd(ibv_pd *pd)
     ibv_mr *ibv_reg_mr(ibv_pd *pd, void *addr, size_t length, int access)
+    ibv_mr *ibv_reg_dmabuf_mr(ibv_pd *pd, uint64_t offset, size_t length,
+                              uint64_t iova, int fd, int access)
+    int ibv_rereg_mr(ibv_mr *mr, int flags, ibv_pd *pd, void *addr,
+                     size_t length, int access)
     int ibv_dereg_mr(ibv_mr *mr)
     int ibv_advise_mr(ibv_pd *pd, uint32_t advice, uint32_t flags,
                       ibv_sge *sg_list, uint32_t num_sge)
@@ -530,6 +682,7 @@ cdef extern from 'infiniband/verbs.h':
     void ibv_ack_cq_events(ibv_cq *cq, int nevents)
     ibv_cq *ibv_create_cq(ibv_context *context, int cqe, void *cq_context,
                           ibv_comp_channel *channel, int comp_vector)
+    int ibv_resize_cq(ibv_cq *cq, int cqe)
     int ibv_destroy_cq(ibv_cq *cq)
     int ibv_poll_cq(ibv_cq *cq, int num_entries, ibv_wc *wc)
     ibv_cq_ex *ibv_create_cq_ex(ibv_context *context,
@@ -582,6 +735,7 @@ cdef extern from 'infiniband/verbs.h':
     int ibv_destroy_srq(ibv_srq *srq)
     int ibv_post_srq_recv(ibv_srq *srq, ibv_recv_wr *recv_wr,
                           ibv_recv_wr **bad_recv_wr)
+    int ibv_post_srq_ops(ibv_srq *srq, ibv_ops_wr *op, ibv_ops_wr **bad_op)
     ibv_pd *ibv_alloc_parent_domain(ibv_context *context,
                                     ibv_parent_domain_init_attr *attr)
     uint32_t ibv_inc_rkey(uint32_t rkey)
@@ -594,6 +748,11 @@ cdef extern from 'infiniband/verbs.h':
     void ibv_wr_bind_mw(ibv_qp_ex *qp, ibv_mw *mw, uint32_t rkey,
                         ibv_mw_bind_info *bind_info)
     void ibv_wr_local_inv(ibv_qp_ex *qp, uint32_t invalidate_rkey)
+    void ibv_wr_flush(ibv_qp_ex *qp, uint32_t rkey,
+                      uint64_t remote_addr, size_t length,
+                      uint8_t ptype, uint8_t level)
+    void ibv_wr_atomic_write(ibv_qp_ex *qp, uint32_t rkey,
+                             uint64_t remote_addr, const void *atomic_wr)
     void ibv_wr_rdma_read(ibv_qp_ex *qp, uint32_t rkey, uint64_t remote_addr)
     void ibv_wr_rdma_write(ibv_qp_ex *qp, uint32_t rkey, uint64_t remote_addr)
     void ibv_wr_rdma_write_imm(ibv_qp_ex *qp, uint32_t rkey,
@@ -620,12 +779,28 @@ cdef extern from 'infiniband/verbs.h':
     void ibv_unimport_mr(ibv_mr *mr)
     ibv_pd *ibv_import_pd(ibv_context *context, uint32_t handle)
     void ibv_unimport_pd(ibv_pd *pd)
+    ibv_dm *ibv_import_dm(ibv_context *context, uint32_t dm_handle)
+    void ibv_unimport_dm(ibv_dm *dm)
     int ibv_query_gid_ex(ibv_context *context, uint32_t port_num,
                          uint32_t gid_index, ibv_gid_entry *entry,
                          uint32_t flags)
     ssize_t ibv_query_gid_table(ibv_context *context,
                                 ibv_gid_entry *entries, size_t max_entries,
                                 uint32_t flags)
+    ibv_flow *ibv_create_flow(ibv_qp *qp, ibv_flow_attr *flow)
+    int ibv_destroy_flow(ibv_flow *flow_id)
+    int ibv_query_rt_values_ex(ibv_context *context, ibv_values_ex *values)
+    int ibv_get_async_event(ibv_context *context, ibv_async_event *event)
+    void ibv_ack_async_event(ibv_async_event *event)
+    int ibv_query_qp_data_in_order(ibv_qp *qp, ibv_wr_opcode op, uint32_t flags)
+    int ibv_fork_init()
+    ibv_fork_status ibv_is_fork_initialized()
+    ibv_wq *ibv_create_wq(ibv_context *context, ibv_wq_init_attr *wq_init_attr)
+    int ibv_modify_wq(ibv_wq *wq, ibv_wq_attr *wq_attr)
+    int ibv_destroy_wq(ibv_wq *wq)
+    int ibv_post_wq_recv(ibv_wq *wq, ibv_recv_wr *recv_wr, ibv_recv_wr **bad_recv_wr)
+    ibv_rwq_ind_table *ibv_create_rwq_ind_table(ibv_context *context, ibv_rwq_ind_table_init_attr *init_attr)
+    int ibv_destroy_rwq_ind_table(ibv_rwq_ind_table *rwq_ind_table)
 
 
 cdef extern from 'infiniband/driver.h':

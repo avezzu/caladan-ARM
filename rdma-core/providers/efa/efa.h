@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause */
 /*
- * Copyright 2019-2020 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2019-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #ifndef __EFA_H__
@@ -15,6 +15,16 @@
 
 #include "efa-abi.h"
 #include "efa_io_defs.h"
+#include "efadv.h"
+
+#define EFA_GET(ptr, mask) FIELD_GET(mask##_MASK, *(ptr))
+
+#define EFA_SET(ptr, mask, value)                                              \
+	({                                                                     \
+		typeof(ptr) _ptr = ptr;                                        \
+		*_ptr = (*_ptr & ~(mask##_MASK)) |                             \
+			FIELD_PREP(mask##_MASK, value);                        \
+	})
 
 struct efa_context {
 	struct verbs_context ibvctx;
@@ -32,6 +42,7 @@ struct efa_context {
 	uint16_t max_tx_batch;
 	uint16_t min_sq_wr;
 	size_t cqe_size;
+	size_t ex_cqe_size;
 	struct efa_qp **qp_table;
 	unsigned int qp_table_sz_m1;
 	pthread_spinlock_t qp_table_lock;
@@ -53,10 +64,14 @@ struct efa_sub_cq {
 
 struct efa_cq {
 	struct verbs_cq verbs_cq;
+	struct efadv_cq dv_cq;
 	uint32_t cqn;
 	size_t cqe_size;
 	uint8_t *buf;
 	size_t buf_size;
+	uint32_t *db;
+	uint16_t cc; /* Consumer Counter */
+	uint8_t cmd_sn;
 	uint16_t num_sub_cqs;
 	/* Index of next sub cq idx to poll. This is used to guarantee fairness for sub cqs */
 	uint16_t next_poll_idx;
@@ -119,8 +134,6 @@ struct efa_qp {
 	struct efa_sq sq;
 	struct efa_rq rq;
 	int page_size;
-	struct efa_cq *rcq;
-	struct efa_cq *scq;
 	int sq_sig_all;
 	int wr_session_err;
 };
@@ -162,6 +175,11 @@ static inline struct efa_cq *to_efa_cq(struct ibv_cq *ibvcq)
 static inline struct efa_cq *to_efa_cq_ex(struct ibv_cq_ex *ibvcqx)
 {
 	return container_of(ibvcqx, struct efa_cq, verbs_cq.cq_ex);
+}
+
+static inline struct efa_cq *efadv_cq_to_efa_cq(struct efadv_cq *efadv_cq)
+{
+	return container_of(efadv_cq, struct efa_cq, dv_cq);
 }
 
 static inline struct efa_qp *to_efa_qp(struct ibv_qp *ibvqp)

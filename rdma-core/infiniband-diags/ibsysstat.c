@@ -41,7 +41,7 @@
 
 #include "ibdiag_common.h"
 
-#define MAX_CPUS 8
+#define MAX_CPUS 256
 
 static struct ibmad_port *srcport;
 
@@ -158,7 +158,7 @@ static int mk_reply(int attr, void *data, int sz)
 	return ret;
 }
 
-static uint8_t buf[2048];
+static uint8_t buf[2048 * 32];
 
 static char *ibsystat_serv(void)
 {

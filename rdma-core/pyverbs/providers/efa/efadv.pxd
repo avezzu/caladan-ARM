@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: (GPL-2.0 OR Linux-OpenIB)
-# Copyright 2020 Amazon.com, Inc. or its affiliates. All rights reserved.
+# Copyright 2020-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
 
 #cython: language_level=3
 
@@ -7,8 +7,9 @@ cimport pyverbs.providers.efa.libefa as dv
 
 from pyverbs.addr cimport AH
 from pyverbs.base cimport PyverbsObject
+from pyverbs.cq cimport CQEX
 from pyverbs.device cimport Context
-from pyverbs.qp cimport QP
+from pyverbs.qp cimport QP, QPEx
 
 
 cdef class EfaContext(Context):
@@ -16,7 +17,7 @@ cdef class EfaContext(Context):
 
 
 cdef class EfaDVDeviceAttr(PyverbsObject):
-    cdef dv.efadv_device_attr dv
+    cdef dv.efadv_device_attr device_attr
 
 
 cdef class EfaAH(AH):
@@ -29,3 +30,19 @@ cdef class EfaDVAHAttr(PyverbsObject):
 
 cdef class SRDQP(QP):
     pass
+
+
+cdef class SRDQPEx(QPEx):
+    pass
+
+
+cdef class EfaQPInitAttr(PyverbsObject):
+    cdef dv.efadv_qp_init_attr qp_init_attr
+
+
+cdef class EfaCQ(CQEX):
+    cdef dv.efadv_cq *dv_cq
+
+
+cdef class EfaDVCQInitAttr(PyverbsObject):
+    cdef dv.efadv_cq_init_attr cq_init_attr

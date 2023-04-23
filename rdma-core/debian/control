@@ -1,13 +1,12 @@
 Source: rdma-core
 Maintainer: Linux RDMA Mailing List <linux-rdma@vger.kernel.org>
-Uploaders: Benjamin Drung <benjamin.drung@cloud.ionos.com>,
+Uploaders: Benjamin Drung <bdrung@ubuntu.com>,
            Talat Batheesh <talatb@mellanox.com>
 Section: net
 Priority: optional
 Build-Depends: cmake (>= 2.8.11),
                cython3,
-               debhelper (>= 9),
-               debhelper (>= 9.20160709) | dh-systemd,
+               debhelper (>= 10),
                dh-python,
                dpkg-dev (>= 1.17),
                libnl-3-dev,
@@ -21,7 +20,7 @@ Build-Depends: cmake (>= 2.8.11),
                python3-docutils,
                valgrind [amd64 arm64 armhf i386 mips mips64el mipsel powerpc ppc64 ppc64el s390x]
 Rules-Requires-Root: no
-Standards-Version: 4.5.0
+Standards-Version: 4.6.1
 Vcs-Git: https://github.com/linux-rdma/rdma-core.git
 Vcs-Browser: https://github.com/linux-rdma/rdma-core
 Homepage: https://github.com/linux-rdma/rdma-core
@@ -68,7 +67,7 @@ Package: ibverbs-providers
 Architecture: linux-any
 Multi-Arch: same
 Depends: ${misc:Depends}, ${shlibs:Depends}
-Provides: libefa1, libipathverbs1, libmlx4-1, libmlx5-1, libmthca1
+Provides: libefa1, libipathverbs1, libmana1, libmlx4-1, libmlx5-1, libmthca1
 Replaces: libipathverbs1 (<< 15),
           libmlx4-1 (<< 15),
           libmlx5-1 (<< 15),
@@ -87,16 +86,18 @@ Description: User space provider drivers for libibverbs
  hardware access from userspace (kernel bypass), and libibverbs
  supports this when available.
  .
- A RDMA driver consists of a kernel portion and a user space portion.
+ An RDMA driver consists of a kernel portion and a user space portion.
  This package contains the user space verbs drivers:
  .
   - bnxt_re: Broadcom NetXtreme-E RoCE HCAs
   - cxgb4: Chelsio T4 iWARP HCAs
   - efa: Amazon Elastic Fabric Adapter
+  - erdma: Alibaba Elastic RDMA (iWarp) Adapter
   - hfi1verbs: Intel Omni-Path HFI
   - hns: HiSilicon Hip06 SoC
-  - i40iw: Intel Ethernet Connection X722 RDMA
   - ipathverbs: QLogic InfiniPath HCAs
+  - irdma: Intel Ethernet Connection RDMA
+  - mana: Microsoft Azure Network Adapter
   - mlx4: Mellanox ConnectX-3 InfiniBand HCAs
   - mlx5: Mellanox Connect-IB/X-4+ InfiniBand HCAs
   - mthca: Mellanox InfiniBand HCAs
@@ -152,7 +153,7 @@ Section: libs
 Pre-Depends: ${misc:Pre-Depends}
 Depends: adduser, ${misc:Depends}, ${shlibs:Depends}
 Recommends: ibverbs-providers
-Breaks: ibverbs-providers (<< 25~)
+Breaks: ibverbs-providers (<< 34~)
 Description: Library for direct userspace use of RDMA (InfiniBand/iWARP)
  libibverbs is a library that allows userspace processes to use RDMA
  "verbs" as described in the InfiniBand Architecture Specification and
@@ -362,6 +363,7 @@ Description: InfiniBand diagnostic programs
 Package: libibmad5
 Section: libs
 Architecture: linux-any
+Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: Infiniband Management Datagram (MAD) library
@@ -390,6 +392,7 @@ Description: Debug symbols for Infiniband Management Datagram (MAD) library
 Package: libibmad-dev
 Section: libdevel
 Architecture: linux-any
+Multi-Arch: same
 Depends: libibmad5 (= ${binary:Version}), ${misc:Depends}
 Description: Development files for libibmad
  libibmad provides low layer Infiniband functions for use by the
@@ -404,6 +407,7 @@ Description: Development files for libibmad
 Package: libibnetdisc5
 Section: libs
 Architecture: linux-any
+Multi-Arch: same
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: InfiniBand diagnostics library
@@ -433,6 +437,7 @@ Description: Debug symbols for the libibnetdisc library
 Package: libibnetdisc-dev
 Section: libdevel
 Architecture: linux-any
+Multi-Arch: same
 Depends: libibnetdisc5 (= ${binary:Version}), ${misc:Depends}
 Breaks: infiniband-diags (<< 2.0.0)
 Replaces: infiniband-diags (<< 2.0.0)

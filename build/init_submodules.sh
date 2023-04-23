@@ -14,7 +14,7 @@ git submodule init
 git submodule update --init -f --recursive
 
 clean() {
-  for mod in dpdk rdma-core spdk deps/pcm; do
+  for mod in dpdk spdk deps/pcm; do
     cd $mod
     git checkout .
     git clean -df .
@@ -30,7 +30,7 @@ fi
 
 echo building RDMA-CORE
 cd rdma-core
-git apply ../build/rdma-core.patch
+#git apply ../build/rdma-core.patch
 if ! EXTRA_CMAKE_FLAGS=-DENABLE_STATIC=1 MAKEFLAGS=-j$CORES ./build.sh; then
   echo "Building rdma-core failed"
   echo "If you see \"Does not match the generator used previously\" try running \"make submodules-clean\" first"
@@ -65,4 +65,3 @@ cd ..
 export EXTRA_CFLAGS=
 export EXTRA_LDFLAGS=
 export PKG_CONFIG_PATH=
-

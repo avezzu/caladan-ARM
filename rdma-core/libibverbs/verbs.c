@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2005 Topspin Communications.  All rights reserved.
  * Copyright (c) 2006, 2007 Cisco Systems, Inc.  All rights reserved.
+ * Copyright (c) 2020 Intel Corperation.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -71,6 +72,8 @@ int __attribute__((const)) ibv_rate_to_mult(enum ibv_rate rate)
 	case IBV_RATE_50_GBPS:  return 20;
 	case IBV_RATE_400_GBPS: return 160;
 	case IBV_RATE_600_GBPS: return 240;
+	case IBV_RATE_800_GBPS: return 320;
+	case IBV_RATE_1200_GBPS: return 480;
 	default:           return -1;
 	}
 }
@@ -91,6 +94,8 @@ enum ibv_rate __attribute__((const)) mult_to_ibv_rate(int mult)
 	case 20: return IBV_RATE_50_GBPS;
 	case 160: return IBV_RATE_400_GBPS;
 	case 240: return IBV_RATE_600_GBPS;
+	case 320: return IBV_RATE_800_GBPS;
+	case 480: return IBV_RATE_1200_GBPS;
 	default: return IBV_RATE_MAX;
 	}
 }
@@ -119,6 +124,8 @@ int  __attribute__((const)) ibv_rate_to_mbps(enum ibv_rate rate)
 	case IBV_RATE_50_GBPS:  return 53125;
 	case IBV_RATE_400_GBPS: return 425000;
 	case IBV_RATE_600_GBPS: return 637500;
+	case IBV_RATE_800_GBPS: return 850000;
+	case IBV_RATE_1200_GBPS: return 1275000;
 	default:               return -1;
 	}
 }
@@ -147,6 +154,8 @@ enum ibv_rate __attribute__((const)) mbps_to_ibv_rate(int mbps)
 	case 53125:  return IBV_RATE_50_GBPS;
 	case 425000: return IBV_RATE_400_GBPS;
 	case 637500: return IBV_RATE_600_GBPS;
+	case 850000: return IBV_RATE_800_GBPS;
+	case 1275000: return IBV_RATE_1200_GBPS;
 	default:     return IBV_RATE_MAX;
 	}
 }
@@ -156,7 +165,10 @@ LATEST_SYMVER_FUNC(ibv_query_device, 1_1, "IBVERBS_1.1",
 		   struct ibv_context *context,
 		   struct ibv_device_attr *device_attr)
 {
-	return get_ops(context)->query_device(context, device_attr);
+	return get_ops(context)->query_device_ex(
+		context, NULL,
+		container_of(device_attr, struct ibv_device_attr_ex, orig_attr),
+		sizeof(*device_attr));
 }
 
 int __lib_query_port(struct ibv_context *context, uint8_t port_num,
@@ -365,6 +377,40 @@ struct ibv_mr *ibv_import_mr(struct ibv_pd *pd, uint32_t mr_handle)
 void ibv_unimport_mr(struct ibv_mr *mr)
 {
 	get_ops(mr->context)->unimport_mr(mr);
+}
+
+/**
+ * ibv_import_dm - Import a device memory
+ */
+struct ibv_dm *ibv_import_dm(struct ibv_context *context, uint32_t dm_handle)
+{
+	return get_ops(context)->import_dm(context, dm_handle);
+}
+
+/**
+ * ibv_unimport_dm - Unimport a device memory
+ */
+void ibv_unimport_dm(struct ibv_dm *dm)
+{
+	get_ops(dm->context)->unimport_dm(dm);
+}
+
+struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
+				 size_t length, uint64_t iova, int fd,
+				 int access)
+{
+	struct ibv_mr *mr;
+
+	mr = get_ops(pd->context)->reg_dmabuf_mr(pd, offset, length, iova,
+						 fd, access);
+	if (!mr)
+		return NULL;
+
+	mr->context = pd->context;
+	mr->pd = pd;
+	mr->addr = (void *)(uintptr_t)offset;
+	mr->length = length;
+	return mr;
 }
 
 LATEST_SYMVER_FUNC(ibv_rereg_mr, 1_1, "IBVERBS_1.1",
@@ -644,6 +690,28 @@ LATEST_SYMVER_FUNC(ibv_query_qp, 1_1, "IBVERBS_1.1",
 		qp->state = attr->qp_state;
 
 	return 0;
+}
+
+int ibv_query_qp_data_in_order(struct ibv_qp *qp, enum ibv_wr_opcode op,
+			       uint32_t flags)
+{
+#if !defined(__i386__) && !defined(__x86_64__)
+	/* Currently this API is only supported for x86 architectures since most
+	 * non-x86 platforms are known to be OOO and need to do a per-platform study.
+	 */
+	return 0;
+#else
+	int result;
+
+	if (!check_comp_mask(flags, IBV_QUERY_QP_DATA_IN_ORDER_RETURN_CAPS))
+		return 0;
+
+	result = get_ops(qp->context)->query_qp_data_in_order(qp, op, flags);
+	if (result & IBV_QUERY_QP_DATA_IN_ORDER_WHOLE_MSG)
+		result |= IBV_QUERY_QP_DATA_IN_ORDER_ALIGNED_128_BYTES;
+
+	return flags ? result : !!(result & IBV_QUERY_QP_DATA_IN_ORDER_WHOLE_MSG);
+#endif
 }
 
 LATEST_SYMVER_FUNC(ibv_modify_qp, 1_1, "IBVERBS_1.1",
@@ -973,7 +1041,6 @@ int ibv_resolve_eth_l2_from_gid(struct ibv_context *context,
 	int ether_len;
 	struct peer_address src;
 	struct peer_address dst;
-	uint16_t ret_vid;
 	int ret = -EINVAL;
 	int err;
 
@@ -1022,10 +1089,11 @@ int ibv_resolve_eth_l2_from_gid(struct ibv_context *context,
 		goto free_resources;
 
 	if (vid) {
-		ret_vid = neigh_get_vlan_id_from_dev(&neigh_handler);
+		uint16_t ret_vid = neigh_get_vlan_id_from_dev(&neigh_handler);
 
 		if (ret_vid <= 0xfff)
 			neigh_set_vlan_id(&neigh_handler, ret_vid);
+		*vid = ret_vid;
 	}
 
 	/* We are using only Ethernet here */
@@ -1035,9 +1103,6 @@ int ibv_resolve_eth_l2_from_gid(struct ibv_context *context,
 
 	if (ether_len <= 0)
 		goto free_resources;
-
-	if (vid)
-		*vid = ret_vid;
 
 	ret = 0;
 

@@ -1,6 +1,8 @@
 publish_internal_headers(util
+  bitmap.h
   cl_qmap.h
   compiler.h
+  interval_set.h
   node_name_map.h
   rdma_nl.h
   symver.h
@@ -8,7 +10,9 @@ publish_internal_headers(util
   )
 
 set(C_FILES
+  bitmap.c
   cl_map.c
+  interval_set.c
   node_name_map.c
   open_cdev.c
   rdma_nl.c
@@ -18,6 +22,7 @@ set(C_FILES
 if (HAVE_COHERENT_DMA)
   publish_internal_headers(util
     mmio.h
+    s390_mmio_insn.h
     udma_barrier.h
     )
 

@@ -11,4 +11,4 @@ CONFIG_DEBUG=y
 # Enable additional compiler optimizations (may reduce compatibility)
 CONFIG_OPTIMIZE=n
 # Allow runtimes to access Mellanox ConnectX-5 NICs directly (kernel bypass)
-CONFIG_DIRECTPATH=n
+CONFIG_DIRECTPATH=y

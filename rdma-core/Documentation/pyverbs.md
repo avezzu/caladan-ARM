@@ -657,8 +657,8 @@ ctx = Context(name='ibp0s8f0')
 pd = PD(ctx)
 mr = MR(pd, 100, e.IBV_ACCESS_LOCAL_WRITE)
 cmd_fd_dup = os.dup(ctx.cmd_fd)
-improted_ctx = Context(cmd_fd=cmd_fd_dup)
-imported_pd = PD(improted_ctx, handle=pd.handle)
+imported_ctx = Context(cmd_fd=cmd_fd_dup)
+imported_pd = PD(imported_ctx, handle=pd.handle)
 imported_mr = MR(imported_pd, handle=mr.handle)
 # MRs can be created as usual on the imported PD
 secondary_mr = MR(imported_pd, 100, e.IBV_ACCESS_REMOTE_READ)
@@ -667,4 +667,115 @@ secondary_mr = MR(imported_pd, 100, e.IBV_ACCESS_REMOTE_READ)
 # This prevents unexpected behaviours caused by the GC.
 imported_mr.unimport()
 imported_pd.unimport()
+```
+
+
+##### Flow Steering
+Flow steering rules define packet matching done by the hardware.
+A spec describes packet matching on a specific layer (L2, L3 etc.).
+A flow is a collection of specs.
+A user QP can attach to flows in order to receive specific packets.
+
+###### Flow and FlowAttr
+
+```python
+from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
+from pyverbs.flow import FlowAttr, Flow
+from pyverbs.spec import EthSpec
+import pyverbs.device as d
+import pyverbs.enums as e
+from pyverbs.pd import PD
+from pyverbs.cq import CQ
+
+
+ctx = d.Context(name='rocep0s8f0')
+pd = PD(ctx)
+cq = CQ(ctx, 100, None, None, 0)
+cap = QPCap(100, 10, 1, 1, 0)
+qia = QPInitAttr(cap=cap, qp_type = e.IBV_QPT_UD, scq=cq, rcq=cq)
+qp = QP(pd, qia, QPAttr())
+
+# Create Eth spec
+eth_spec = EthSpec(ether_type=0x800, dst_mac="01:50:56:19:20:a7")
+eth_spec.src_mac = "24:8a:07:a5:28:c8"
+eth_spec.src_mac_mask = "ff:ff:ff:ff:ff:ff"
+
+# Create Flow
+flow_attr = FlowAttr(num_of_specs=1)
+flow_attr.specs.append(eth_spec)
+flow = Flow(qp, flow_attr)
+```
+
+###### Specs
+Each spec holds a specific network layer parameters for matching. To enforce
+the match, the user sets a mask for each parameter. If the bit is set in the
+mask, the corresponding bit in the value should be matched.
+Packets coming from the wire are matched against the flow specification. If a
+match is found, the associated flow actions are executed on the packet. In
+ingress flows, the QP parameter is treated as another action of scattering the
+packet to the respected QP.
+
+
+###### Notes
+* When creating specs mask will be set to FF's to all the given values (unless
+provided by the user). When editing a spec mask should be specified explicitly.
+* If a field is not provided its value and mask will be set to zeros.
+* Hardware only supports full / empty masks.
+* Ethernet, IPv4, TCP/UDP, IPv6 and ESP specs can be inner (IBV_FLOW_SPEC_INNER),
+but set to outer by default.
+
+
+###### Ethernet spec
+Example of creating and editing Ethernet spec
+```python
+from pyverbs.spec import EthSpec
+eth_spec = EthSpec(src_mac="ab:cd:ef:ab:cd:ef", vlan_tag=0x123, is_inner=1)
+eth_spec.dst_mac = "de:de:de:00:de:de"
+eth_spec.dst_mac_mask = "ff:ff:ff:ff:ff:ff"
+eth_spec.ether_type = 0x321
+eth_spec.ether_type_mask = 0xffff
+# Resulting spec
+print(f'{eth_spec}')
+```
+Below is the output when printing the spec.
+
+    Spec type       : IBV_FLOW_SPEC_INNER IBV_FLOW_SPEC_ETH
+    Size            : 40
+    Src mac         : ab:cd:ef:ab:cd:ef    mask: ff:ff:ff:ff:ff:ff
+    Dst mac         : de:de:de:00:de:de    mask: ff:ff:ff:ff:ff:ff
+    Ether type      : 8451                 mask: 65535
+    Vlan tag        : 8961                 mask: 65535
+
+
+##### MLX5 DevX Objects
+A DevX object represents some underlay firmware object, the input command to
+create it is some raw data given by the user application which should match the
+device specification.
+Upon successful creation, the output buffer includes the raw data from the device
+according to its specification and is stored in the Mlx5DevxObj instance. This
+data can be used as part of related firmware commands to this object.
+In addition to creation, the user can query/modify and destroy the object.
+
+Although weakrefs and DevX objects closure are added and handled by
+Pyverbs, the users must manually close these objects when finished, and
+should not let them be handled by the GC, or by closing the Mlx5Context directly,
+since there's no guarantee that the DevX objects are closed in the correct order,
+because Mlx5DevxObj is a general class that can be any of the device's available
+objects.
+But Pyverbs does guarantee to close DevX UARs and UMEMs in order, and after
+closing the other DevX objects.
+
+The following code snippet shows how to allocate and destroy a PD object over DevX.
+```python
+from pyverbs.providers.mlx5.mlx5dv import Mlx5Context, Mlx5DVContextAttr, Mlx5DevxObj
+import pyverbs.providers.mlx5.mlx5_enums as dve
+import struct
+
+attr = Mlx5DVContextAttr(dve.MLX5DV_CONTEXT_FLAGS_DEVX)
+ctx = Mlx5Context(attr, 'rocep8s0f0')
+MLX5_CMD_OP_ALLOC_PD = 0x800
+MLX5_CMD_OP_ALLOC_PD_OUTLEN = 0x10
+cmd_in = struct.pack('!H14s', MLX5_CMD_OP_ALLOC_PD, bytes(0))
+pd = Mlx5DevxObj(ctx, cmd_in, MLX5_CMD_OP_ALLOC_PD_OUTLEN)
+pd.close()
 ```

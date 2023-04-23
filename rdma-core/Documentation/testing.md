@@ -96,7 +96,7 @@ Verbose mode provides the reason for skipping the test (if one was provided by
 the test developer).
 
 ### Customized Execution
-tests/__init__.py defines a `_load_tests` function that returns an array with
+tests/\_\_init\_\_.py defines a `_load_tests` function that returns an array with
 the tests that will be executed.
 The default implementation collects all test_* methods from all the classes that
 inherit from `unittest.TestCase` (or `RDMATestCase`) and located in files under
@@ -124,6 +124,27 @@ test_query_port_bad_flow (tests.test_device.DeviceTest) ... ok
 
 ----------------------------------------------------------------------
 Ran 14 tests in 0.152s
+
+OK
+```
+
+### GPUDirect RDMA
+Part of the available tests includes GPUDirect RDMA.
+Those tests run RDMA traffic over CUDA-allocated memory.
+In order to run them successfully it's required to have a supported NVIDIA GPU,
+CUDA 11.7 and above with "Open flavor" ("-m kernel-open") Driver 515 or later
+and cuda-python 12.0 and above.
+Running the tests is similar to other tests, with the option to choose which GPU
+unit to use in case there are multiple GPUs on the setup.
+```
+$ build/bin/run_tests.py -v --gpu 0 -k cuda
+test_cuda_dmabuf_rdma_write_traffic (tests.test_cuda_dmabuf.DmabufCudaTest)
+Runs RDMA Write traffic over CUDA allocated memory using DMA BUF and ... ok
+test_mlx_devx_cuda_send_imm_traffic (tests.test_mlx5_cuda_umem.Mlx5GpuDevxRcTrafficTest)
+Creates two DevX RC QPs and runs SEND_IMM traffic over CUDA allocated ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 3.033s
 
 OK
 ```

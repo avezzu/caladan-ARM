@@ -91,7 +91,7 @@ static const struct verbs_match_ent cna_table[] = {
 };
 
 static const struct verbs_context_ops bnxt_re_cntx_ops = {
-	.query_device  = bnxt_re_query_device,
+	.query_device_ex = bnxt_re_query_device,
 	.query_port    = bnxt_re_query_port,
 	.alloc_pd      = bnxt_re_alloc_pd,
 	.dealloc_pd    = bnxt_re_free_pd,
@@ -100,6 +100,7 @@ static const struct verbs_context_ops bnxt_re_cntx_ops = {
 	.create_cq     = bnxt_re_create_cq,
 	.poll_cq       = bnxt_re_poll_cq,
 	.req_notify_cq = bnxt_re_arm_cq,
+	.resize_cq     = bnxt_re_resize_cq,
 	.destroy_cq    = bnxt_re_destroy_cq,
 	.create_srq    = bnxt_re_create_srq,
 	.modify_srq    = bnxt_re_modify_srq,
@@ -129,10 +130,11 @@ static struct verbs_context *bnxt_re_alloc_context(struct ibv_device *vdev,
 						   int cmd_fd,
 						   void *private_data)
 {
-	struct ibv_get_context cmd;
+	struct bnxt_re_dev *rdev = to_bnxt_re_dev(vdev);
 	struct ubnxt_re_cntx_resp resp;
-	struct bnxt_re_dev *dev = to_bnxt_re_dev(vdev);
 	struct bnxt_re_context *cntx;
+	struct ibv_get_context cmd;
+	int ret;
 
 	cntx = verbs_init_and_alloc_context(vdev, cmd_fd, cntx, ibvctx,
 					    RDMA_DRIVER_BNXT_RE);
@@ -146,9 +148,9 @@ static struct verbs_context *bnxt_re_alloc_context(struct ibv_device *vdev,
 
 	cntx->dev_id = resp.dev_id;
 	cntx->max_qp = resp.max_qp;
-	dev->pg_size = resp.pg_size;
-	dev->cqe_size = resp.cqe_sz;
-	dev->max_cq_depth = resp.max_cqd;
+	rdev->pg_size = resp.pg_size;
+	rdev->cqe_size = resp.cqe_sz;
+	rdev->max_cq_depth = resp.max_cqd;
 	if (resp.comp_mask & BNXT_RE_UCNTX_CMASK_HAVE_CCTX) {
 		cntx->cctx.chip_num = resp.chip_id0 & 0xFFFF;
 		cntx->cctx.chip_rev = (resp.chip_id0 >>
@@ -157,9 +159,13 @@ static struct verbs_context *bnxt_re_alloc_context(struct ibv_device *vdev,
 					 BNXT_RE_CHIP_ID0_CHIP_MET_SFT) &
 					 0xFF;
 	}
+
+	if (resp.comp_mask & BNXT_RE_UCNTX_CMASK_HAVE_MODE)
+		cntx->wqe_mode = resp.mode;
+
 	pthread_spin_init(&cntx->fqlock, PTHREAD_PROCESS_PRIVATE);
 	/* mmap shared page. */
-	cntx->shpg = mmap(NULL, dev->pg_size, PROT_READ | PROT_WRITE,
+	cntx->shpg = mmap(NULL, rdev->pg_size, PROT_READ | PROT_WRITE,
 			  MAP_SHARED, cmd_fd, 0);
 	if (cntx->shpg == MAP_FAILED) {
 		cntx->shpg = NULL;
@@ -168,6 +174,10 @@ static struct verbs_context *bnxt_re_alloc_context(struct ibv_device *vdev,
 	pthread_mutex_init(&cntx->shlock, NULL);
 
 	verbs_set_ops(&cntx->ibvctx, &bnxt_re_cntx_ops);
+	cntx->rdev = rdev;
+	ret = ibv_query_device(&cntx->ibvctx.context, &rdev->devattr);
+	if (ret)
+		goto failed;
 
 	return &cntx->ibvctx;
 
@@ -180,19 +190,19 @@ failed:
 static void bnxt_re_free_context(struct ibv_context *ibvctx)
 {
 	struct bnxt_re_context *cntx = to_bnxt_re_context(ibvctx);
-	struct bnxt_re_dev *dev = to_bnxt_re_dev(ibvctx->device);
+	struct bnxt_re_dev *rdev = to_bnxt_re_dev(ibvctx->device);
 
 	/* Unmap if anything device specific was mapped in init_context. */
 	pthread_mutex_destroy(&cntx->shlock);
 	if (cntx->shpg)
-		munmap(cntx->shpg, dev->pg_size);
+		munmap(cntx->shpg, rdev->pg_size);
 	pthread_spin_destroy(&cntx->fqlock);
 
 	/* Un-map DPI only for the first PD that was
 	 * allocated in this context.
 	 */
 	if (cntx->udpi.dbpage && cntx->udpi.dbpage != MAP_FAILED) {
-		munmap(cntx->udpi.dbpage, dev->pg_size);
+		munmap(cntx->udpi.dbpage, rdev->pg_size);
 		cntx->udpi.dbpage = NULL;
 	}
 
@@ -203,13 +213,13 @@ static void bnxt_re_free_context(struct ibv_context *ibvctx)
 static struct verbs_device *
 bnxt_re_device_alloc(struct verbs_sysfs_dev *sysfs_dev)
 {
-	struct bnxt_re_dev *dev;
+	struct bnxt_re_dev *rdev;
 
-	dev = calloc(1, sizeof(*dev));
-	if (!dev)
+	rdev = calloc(1, sizeof(*rdev));
+	if (!rdev)
 		return NULL;
 
-	return &dev->vdev;
+	return &rdev->vdev;
 }
 
 static const struct verbs_device_ops bnxt_re_dev_ops = {

@@ -44,6 +44,7 @@
 #include <stddef.h>
 #include <endian.h>
 #include <pthread.h>
+#include <sys/param.h>
 
 #include <infiniband/driver.h>
 #include <util/udma_barrier.h>
@@ -80,9 +81,11 @@ struct bnxt_re_cq {
 	struct ibv_cq ibvcq;
 	uint32_t cqid;
 	struct bnxt_re_queue cqq;
+	struct bnxt_re_queue resize_cqq;
 	struct bnxt_re_dpi *udpi;
 	struct list_head sfhead;
 	struct list_head rfhead;
+	struct list_head prev_cq_head;
 	uint32_t cqe_size;
 	uint8_t  phase;
 	int deferred_arm_flags;
@@ -96,7 +99,10 @@ struct bnxt_re_wrid {
 	uint64_t wrid;
 	uint32_t bytes;
 	int next_idx;
+	uint32_t st_slot_idx;
+	uint8_t slots;
 	uint8_t sig;
+
 };
 
 struct bnxt_re_qpcap {
@@ -120,13 +126,18 @@ struct bnxt_re_srq {
 	bool arm_req;
 };
 
+struct bnxt_re_joint_queue {
+	struct bnxt_re_queue *hwque;
+	struct bnxt_re_wrid *swque;
+	uint32_t start_idx;
+	uint32_t last_idx;
+};
+
 struct bnxt_re_qp {
 	struct ibv_qp ibvqp;
 	struct bnxt_re_chip_ctx *cctx;
-	struct bnxt_re_queue *sqq;
-	struct bnxt_re_wrid *swrid;
-	struct bnxt_re_queue *rqq;
-	struct bnxt_re_wrid *rwrid;
+	struct bnxt_re_joint_queue *jsqq;
+	struct bnxt_re_joint_queue *jrqq;
 	struct bnxt_re_srq *srq;
 	struct bnxt_re_cq *scq;
 	struct bnxt_re_cq *rcq;
@@ -141,6 +152,7 @@ struct bnxt_re_qp {
 	uint64_t wqe_cnt;
 	uint16_t mtu;
 	uint16_t qpst;
+	uint32_t qpmode;
 	uint8_t qptyp;
 	/* irdord? */
 };
@@ -161,16 +173,19 @@ struct bnxt_re_dev {
 
 	uint32_t cqe_size;
 	uint32_t max_cq_depth;
+	struct ibv_device_attr devattr;
 };
 
 struct bnxt_re_context {
 	struct verbs_context ibvctx;
+	struct bnxt_re_dev *rdev;
 	uint32_t dev_id;
 	uint32_t max_qp;
 	struct bnxt_re_chip_ctx cctx;
 	uint32_t max_srq;
 	struct bnxt_re_dpi udpi;
 	void *shpg;
+	uint32_t wqe_mode;
 	pthread_mutex_t shlock;
 	pthread_spinlock_t fqlock;
 };
@@ -424,5 +439,25 @@ static inline void bnxt_re_change_cq_phase(struct bnxt_re_cq *cq)
 {
 	if (!cq->cqq.head)
 		cq->phase = (~cq->phase & BNXT_RE_BCQE_PH_MASK);
+}
+
+static inline void *bnxt_re_get_swqe(struct bnxt_re_joint_queue *jqq,
+				     uint32_t *wqe_idx)
+{
+	if (wqe_idx)
+		*wqe_idx = jqq->start_idx;
+	return &jqq->swque[jqq->start_idx];
+}
+
+static inline void bnxt_re_jqq_mod_start(struct bnxt_re_joint_queue *jqq,
+					 uint32_t idx)
+{
+	jqq->start_idx = jqq->swque[idx].next_idx;
+}
+
+static inline void bnxt_re_jqq_mod_last(struct bnxt_re_joint_queue *jqq,
+					uint32_t idx)
+{
+	jqq->last_idx = jqq->swque[idx].next_idx;
 }
 #endif

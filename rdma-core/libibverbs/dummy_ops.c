@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2017 Mellanox Technologies, Inc.  All rights reserved.
+ * Copyright (c) 2020 Intel Corporation.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -287,6 +288,13 @@ static int get_srq_num(struct ibv_srq *srq, uint32_t *srq_num)
 	return EOPNOTSUPP;
 }
 
+static struct ibv_dm *import_dm(struct ibv_context *context,
+				uint32_t dm_handle)
+{
+	errno = EOPNOTSUPP;
+	return NULL;
+}
+
 static struct ibv_mr *import_mr(struct ibv_pd *pd,
 				uint32_t mr_handle)
 {
@@ -377,33 +385,22 @@ static int post_srq_recv(struct ibv_srq *srq, struct ibv_recv_wr *recv_wr,
 	return EOPNOTSUPP;
 }
 
-static int query_device(struct ibv_context *context,
-			struct ibv_device_attr *device_attr)
-{
-	return EOPNOTSUPP;
-}
-
-/* Provide a generic implementation for all providers that don't implement
- * query_device_ex.
- */
 static int query_device_ex(struct ibv_context *context,
 			   const struct ibv_query_device_ex_input *input,
 			   struct ibv_device_attr_ex *attr, size_t attr_size)
 {
-	if (input && input->comp_mask)
-		return EINVAL;
-
-	if (attr_size < sizeof(attr->orig_attr))
-		return EOPNOTSUPP;
-
-	memset(attr, 0, attr_size);
-
-	return ibv_query_device(context, &attr->orig_attr);
+	return EOPNOTSUPP;
 }
 
 static int query_ece(struct ibv_qp *qp, struct ibv_ece *ece)
 {
 	return EOPNOTSUPP;
+}
+
+static int query_qp_data_in_order(struct ibv_qp *qp, enum ibv_wr_opcode op,
+				  uint32_t flags)
+{
+	return 0;
 }
 
 static int query_port(struct ibv_context *context, uint8_t port_num,
@@ -452,6 +449,14 @@ static struct ibv_mr *reg_mr(struct ibv_pd *pd, void *addr, size_t length,
 	return NULL;
 }
 
+static struct ibv_mr *reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
+				    size_t length, uint64_t iova,
+				    int fd, int access)
+{
+	errno = EOPNOTSUPP;
+	return NULL;
+}
+
 static int req_notify_cq(struct ibv_cq *cq, int solicited_only)
 {
 	return EOPNOTSUPP;
@@ -472,6 +477,10 @@ static int resize_cq(struct ibv_cq *cq, int cqe)
 static int set_ece(struct ibv_qp *qp, struct ibv_ece *ece)
 {
 	return EOPNOTSUPP;
+}
+
+static void unimport_dm(struct ibv_dm *dm)
+{
 }
 
 static void unimport_mr(struct ibv_mr *mr)
@@ -536,6 +545,7 @@ const struct verbs_context_ops verbs_dummy_ops = {
 	free_context,
 	free_dm,
 	get_srq_num,
+	import_dm,
 	import_mr,
 	import_pd,
 	modify_cq,
@@ -551,20 +561,22 @@ const struct verbs_context_ops verbs_dummy_ops = {
 	post_send,
 	post_srq_ops,
 	post_srq_recv,
-	query_device,
 	query_device_ex,
 	query_ece,
 	query_port,
 	query_qp,
+	query_qp_data_in_order,
 	query_rt_values,
 	query_srq,
 	read_counters,
 	reg_dm_mr,
+	reg_dmabuf_mr,
 	reg_mr,
 	req_notify_cq,
 	rereg_mr,
 	resize_cq,
 	set_ece,
+	unimport_dm,
 	unimport_mr,
 	unimport_pd,
 };
@@ -658,6 +670,7 @@ void verbs_set_ops(struct verbs_context *vctx,
 	SET_PRIV_OP_IC(ctx, free_context);
 	SET_OP(vctx, free_dm);
 	SET_OP(vctx, get_srq_num);
+	SET_PRIV_OP_IC(vctx, import_dm);
 	SET_PRIV_OP_IC(vctx, import_mr);
 	SET_PRIV_OP_IC(vctx, import_pd);
 	SET_OP(vctx, modify_cq);
@@ -673,20 +686,22 @@ void verbs_set_ops(struct verbs_context *vctx,
 	SET_OP(ctx, post_send);
 	SET_OP(vctx, post_srq_ops);
 	SET_OP(ctx, post_srq_recv);
-	SET_PRIV_OP(ctx, query_device);
 	SET_OP(vctx, query_device_ex);
 	SET_PRIV_OP_IC(vctx, query_ece);
 	SET_PRIV_OP_IC(ctx, query_port);
 	SET_PRIV_OP(ctx, query_qp);
+	SET_PRIV_OP_IC(ctx, query_qp_data_in_order);
 	SET_OP(vctx, query_rt_values);
 	SET_OP(vctx, read_counters);
 	SET_PRIV_OP(ctx, query_srq);
 	SET_OP(vctx, reg_dm_mr);
+	SET_PRIV_OP_IC(vctx, reg_dmabuf_mr);
 	SET_PRIV_OP(ctx, reg_mr);
 	SET_OP(ctx, req_notify_cq);
 	SET_PRIV_OP(ctx, rereg_mr);
 	SET_PRIV_OP(ctx, resize_cq);
 	SET_PRIV_OP_IC(vctx, set_ece);
+	SET_PRIV_OP_IC(vctx, unimport_dm);
 	SET_PRIV_OP_IC(vctx, unimport_mr);
 	SET_PRIV_OP_IC(vctx, unimport_pd);
 

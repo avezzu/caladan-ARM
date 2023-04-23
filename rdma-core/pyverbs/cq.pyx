@@ -10,6 +10,8 @@ cimport pyverbs.libibverbs_enums as e
 from pyverbs.device cimport Context
 from pyverbs.srq cimport SRQ
 from pyverbs.qp cimport QP
+from pyverbs.wq cimport WQ
+
 
 cdef class CompChannel(PyverbsCM):
     """
@@ -38,7 +40,8 @@ cdef class CompChannel(PyverbsCM):
 
     cpdef close(self):
         if self.cc != NULL:
-            self.logger.debug('Closing completion channel')
+            if self.logger:
+                self.logger.debug('Closing completion channel')
             close_weakrefs([self.cqs])
             rc = v.ibv_destroy_comp_channel(self.cc)
             if rc != 0:
@@ -101,6 +104,7 @@ cdef class CQ(PyverbsCM):
         context.add_ref(self)
         self.qps = weakref.WeakSet()
         self.srqs = weakref.WeakSet()
+        self.wqs = weakref.WeakSet()
         self.num_events = 0
         self.logger.debug('Created a CQ')
 
@@ -109,6 +113,8 @@ cdef class CQ(PyverbsCM):
             self.qps.add(obj)
         elif isinstance(obj, SRQ):
             self.srqs.add(obj)
+        elif isinstance(obj, WQ):
+            self.wqs.add(obj)
         else:
             raise PyverbsError('Unrecognized object type')
 
@@ -117,8 +123,9 @@ cdef class CQ(PyverbsCM):
 
     cpdef close(self):
         if self.cq != NULL:
-            self.logger.debug('Closing CQ')
-            close_weakrefs([self.qps, self.srqs])
+            if self.logger:
+                self.logger.debug('Closing CQ')
+            close_weakrefs([self.qps, self.srqs, self.wqs])
             if self.num_events:
                 self.ack_events(self.num_events)
             rc = v.ibv_destroy_cq(self.cq)
@@ -127,6 +134,16 @@ cdef class CQ(PyverbsCM):
             self.cq = NULL
             self.context = None
             self.channel = None
+
+    def resize(self, cqe):
+        """
+        Resizes the completion queue (CQ) to have at least cqe entries.
+        :param cqe: The requested CQ depth.
+        :return: None
+        """
+        rc = v.ibv_resize_cq(self.cq, cqe)
+        if rc:
+            raise PyverbsRDMAError('Failed to resize CQ', rc)
 
     def poll(self, num_entries=1):
         """
@@ -142,7 +159,7 @@ cdef class CQ(PyverbsCM):
         while npolled < num_entries:
             rc = v.ibv_poll_cq(self.cq, 1, &wc)
             if rc < 0:
-                raise PyverbsRDMAErrno('Failed to poll CQ')
+                raise PyverbsRDMAError('Failed to poll CQ', -rc)
             if rc == 0:
                 break;
             npolled += 1
@@ -186,6 +203,10 @@ cdef class CQ(PyverbsCM):
     @property
     def comp_channel(self):
         return self.channel
+
+    @property
+    def cqe(self):
+        return self.cq.cqe
 
 
 cdef class CqInitAttrEx(PyverbsObject):
@@ -323,7 +344,8 @@ cdef class CQEX(PyverbsCM):
 
     cpdef close(self):
         if self.cq != NULL:
-            self.logger.debug('Closing CQEx')
+            if self.logger:
+                self.logger.debug('Closing CQEx')
             close_weakrefs([self.srqs, self.qps])
             rc = v.ibv_destroy_cq(<v.ibv_cq*>self.cq)
             if rc != 0:
@@ -597,7 +619,7 @@ def cqe_opcode_to_str(opcode):
                 0x81: "Receive RDMA with immediate",
                 0x82: "Tag matching - add", 0x83: "Tag matching - delete",
                 0x84: "Tag matching - sync", 0x85: "Tag matching - receive",
-                0x86: "Tag matching - no tag"}[opcode]
+                0x86: "Tag matching - no tag", 0x87: "Driver WR"}[opcode]
     except KeyError:
         return "Unknown CQE opcode {op}".format(op=opcode)
 

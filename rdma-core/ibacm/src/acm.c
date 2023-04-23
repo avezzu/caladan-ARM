@@ -38,7 +38,6 @@
 #include <osd.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/time.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -218,6 +217,7 @@ static const char *opts_file = ACM_CONF_DIR "/" ACM_OPTS_FILE;
 static const char *addr_file = ACM_CONF_DIR "/" ACM_ADDR_FILE;
 static char log_file[128] = IBACM_LOG_FILE;
 static int log_level = 0;
+static int umad_debug_level;
 static char lock_file[128] = IBACM_PID_FILE;
 static short server_port = 6125;
 static int server_mode = IBACM_SERVER_MODE_DEFAULT;
@@ -1242,13 +1242,13 @@ static int acm_svr_ep_query(struct acmc_client *client, struct acm_msg **_msg)
 	ep = acm_get_ep(index - 1, msg->hdr.src_index);
 	if (ep) {
 		msg->hdr.status = ACM_STATUS_SUCCESS;
-		msg->ep_data[0].dev_guid = ep->port->dev->device.dev_guid;
-		msg->ep_data[0].port_num = ep->port->port.port_num;
-		msg->ep_data[0].phys_port_cnt = ep->port->dev->port_cnt;
-		msg->ep_data[0].pkey = htobe16(ep->endpoint.pkey);
-		strncpy((char *)msg->ep_data[0].prov_name, ep->port->prov->name,
+		msg->ep_data.dev_guid = ep->port->dev->device.dev_guid;
+		msg->ep_data.port_num = ep->port->port.port_num;
+		msg->ep_data.phys_port_cnt = ep->port->dev->port_cnt;
+		msg->ep_data.pkey = htobe16(ep->endpoint.pkey);
+		strncpy((char *)msg->ep_data.prov_name, ep->port->prov->name,
 			ACM_MAX_PROV_NAME - 1);
-		msg->ep_data[0].prov_name[ACM_MAX_PROV_NAME - 1] = '\0';
+		msg->ep_data.prov_name[ACM_MAX_PROV_NAME - 1] = '\0';
 		len = ACM_MSG_HDR_LENGTH + sizeof(struct acm_ep_config_data);
 		for (i = 0; i < ep->nmbr_ep_addrs; i++) {
 			if (ep->addr_info[i].addr.type != ACM_ADDRESS_INVALID) {
@@ -1256,12 +1256,12 @@ static int acm_svr_ep_query(struct acmc_client *client, struct acm_msg **_msg)
 				msg = *_msg;
 				if (sts)
 					break;
-				memcpy(msg->ep_data[0].addrs[cnt++].name,
+				memcpy(msg->ep_data.addrs[cnt++].name,
 				       ep->addr_info[i].string_buf,
 				       ACM_MAX_ADDRESS);
 			}
 		}
-		msg->ep_data[0].addr_cnt = htobe16(cnt);
+		msg->ep_data.addr_cnt = htobe16(cnt);
 		len += cnt * ACM_MAX_ADDRESS;
 	} else {
 		msg->hdr.status = ACM_STATUS_EINVAL;
@@ -3090,9 +3090,10 @@ static void acmc_recv_mad(struct acmc_port *port)
 	}
 
 	hdr = &resp.sa_mad.mad_hdr;
-	acm_log(2, "bv %x cls %x cv %x mtd %x st %d tid %" PRIx64 "x at %x atm %x\n",
+	acm_log(2, "bv %x cls %x cv %x mtd %x st %d tid %" PRIx64 " at %x atm %x\n",
 		hdr->base_version, hdr->mgmt_class, hdr->class_version,
-		hdr->method, hdr->status, be64toh(hdr->tid), hdr->attr_id, hdr->attr_mod);
+		hdr->method, be16toh(hdr->status), be64toh(hdr->tid),
+		be16toh(hdr->attr_id), be32toh(hdr->attr_mod));
 	found = 0;
 	pthread_mutex_lock(&port->lock);
 	list_for_each(&port->sa_pending, req, entry) {
@@ -3188,6 +3189,11 @@ static void acm_set_options(void)
 			strcpy(log_file, value);
 		else if (!strcasecmp("log_level", opt))
 			log_level = atoi(value);
+		else if (!strcasecmp("umad_debug_level", opt)) {
+			umad_debug_level = atoi(value);
+			if (umad_debug_level > 0)
+				umad_debug(umad_debug_level);
+		}
 		else if (!strcasecmp("lock_file", opt))
 			strcpy(lock_file, value);
 		else if (!strcasecmp("server_port", opt))
@@ -3229,6 +3235,7 @@ static void acm_log_options(void)
 
 	acm_log(0, "log file %s\n", log_file);
 	acm_log(0, "log level %d\n", log_level);
+	acm_log(0, "umad debug level %d\n", umad_debug_level);
 	acm_log(0, "lock file %s\n", lock_file);
 	acm_log(0, "server_port %d\n", server_port);
 	acm_log(0, "server_mode %s\n", server_mode_names[server_mode]);

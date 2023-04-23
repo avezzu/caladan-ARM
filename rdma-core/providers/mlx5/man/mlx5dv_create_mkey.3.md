@@ -9,7 +9,7 @@ tagline: Verbs
 
 mlx5dv_create_mkey -  Creates an indirect mkey
 
-mlx5dv_create_mkey -  Destroys an indirect mkey
+mlx5dv_destroy_mkey -  Destroys an indirect mkey
 
 # SYNOPSIS
 
@@ -50,6 +50,21 @@ Create an indirect mkey to enable application uses its specific device functiona
 *create_flags*
 :	MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT:
 		Indirect mkey is being created.
+	MLX5DV_MKEY_INIT_ATTR_FLAGS_BLOCK_SIGNATURE:
+		Enable block signature offload support for mkey.
+	MLX5DV_MKEY_INIT_ATTR_FLAGS_CRYPTO:
+		Enable crypto offload support for mkey.
+		Setting this flag means that crypto operations will be done and
+		hence, must be configured. I.e. if this flag is set and the MKey
+		was not configured for crypto properties using
+		**mlx5dv_wr_set_mkey_crypto()**, then running traffic with the
+		MKey will fail, generating a CQE with error.
+	MLX5DV_MKEY_INIT_ATTR_FLAGS_UPDATE_TAG:
+		Enable update tag support for mkey.
+		Setting this flag allows an application to set the mkey tag post of creating the mkey.
+		If the kernel does not support updating the mkey tag, mkey creation will fail.
+	MLX5DV_MKEY_INIT_ATTR_FLAGS_REMOTE_INVALIDATE:
+		Enable remote invalidation support for mkey.
 
 *max_entries*
 :	Requested max number of pointed entries by this indirect mkey.

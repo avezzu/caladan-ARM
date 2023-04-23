@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012 Mellanox Technologies, Inc.  All rights reserved.
+ * Copyright (c) 2020 Intel Corporation.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -35,15 +36,17 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <util/compiler.h>
 
 #include <infiniband/driver.h>
 #include <util/udma_barrier.h>
+#include <util/cl_qmap.h>
 #include <util/util.h>
 #include "mlx5-abi.h"
+#include <util/bitmap.h>
 #include <ccan/list.h>
-#include "bitmap.h"
 #include <ccan/minmax.h>
 #include "mlx5dv.h"
 
@@ -69,6 +72,7 @@ enum {
 
 enum {
 	MLX5_ADAPTER_PAGE_SIZE		= 4096,
+	MLX5_ADAPTER_PAGE_SHIFT		= 12,
 };
 
 #define MLX5_CQ_PREFIX "MLX_CQ"
@@ -91,6 +95,7 @@ enum {
 
 extern uint32_t mlx5_debug_mask;
 extern int mlx5_freeze_on_error_cqe;
+extern const struct verbs_match_ent mlx5_hca_table[];
 
 #ifdef MLX5_DEBUG
 #define mlx5_dbg(fp, mask, format, arg...)				\
@@ -109,6 +114,18 @@ static inline void mlx5_dbg(FILE *fp, uint32_t mask, const char *fmt, ...)
 {
 }
 #endif
+
+__attribute__((format(printf, 2, 3)))
+static inline void mlx5_err(FILE *fp, const char *fmt, ...)
+{
+	va_list args;
+
+	if (!fp)
+		return;
+	va_start(args, fmt);
+	vfprintf(fp, fmt, args);
+	va_end(args);
+}
 
 enum {
 	MLX5_STAT_RATE_OFFSET		= 5
@@ -130,6 +147,12 @@ enum {
 	MLX5_SRQ_TABLE_SHIFT		= 12,
 	MLX5_SRQ_TABLE_MASK		= (1 << MLX5_SRQ_TABLE_SHIFT) - 1,
 	MLX5_SRQ_TABLE_SIZE		= 1 << (24 - MLX5_SRQ_TABLE_SHIFT),
+};
+
+enum {
+	MLX5_MKEY_TABLE_SHIFT		= 12,
+	MLX5_MKEY_TABLE_MASK		= (1 << MLX5_MKEY_TABLE_SHIFT) - 1,
+	MLX5_MKEY_TABLE_SIZE		= 1 << (24 - MLX5_MKEY_TABLE_SHIFT),
 };
 
 enum {
@@ -238,11 +261,54 @@ enum mlx5_ctx_flags {
 	MLX5_CTX_FLAGS_FATAL_STATE = 1 << 0,
 	MLX5_CTX_FLAGS_NO_KERN_DYN_UAR = 1 << 1,
 	MLX5_CTX_FLAGS_ECE_SUPPORTED = 1 << 2,
+	MLX5_CTX_FLAGS_SQD2RTS_SUPPORTED = 1 << 3,
+	MLX5_CTX_FLAGS_REAL_TIME_TS_SUPPORTED = 1 << 4,
+	MLX5_CTX_FLAGS_MKEY_UPDATE_TAG_SUPPORTED = 1 << 5,
 };
 
-struct mlx5_lag_caps {
+struct mlx5_entropy_caps {
 	uint8_t num_lag_ports;
-	uint8_t lag_tx_port_affinity;
+	uint8_t lag_tx_port_affinity:1;
+	uint8_t rts2rts_qp_udp_sport:1;
+	uint8_t rts2rts_lag_tx_port_affinity:1;
+};
+
+struct mlx5_qos_caps {
+	uint8_t qos:1;
+
+	uint8_t nic_sq_scheduling:1;
+	uint8_t nic_bw_share:1;
+	uint8_t nic_rate_limit:1;
+	uint8_t nic_qp_scheduling:1;
+
+	uint32_t nic_element_type;
+	uint32_t nic_tsar_type;
+};
+
+struct mlx5_hca_cap_2_caps {
+	uint32_t log_reserved_qpns_per_obj;
+};
+
+struct reserved_qpn_blk {
+	unsigned long *bmp;
+	uint32_t first_qpn;
+	struct list_node entry;
+	unsigned int next_avail_slot;
+	struct mlx5dv_devx_obj *obj;
+};
+
+struct mlx5_reserved_qpns {
+	struct list_head blk_list;
+	pthread_mutex_t mutex;
+};
+
+struct mlx5_dv_context_ops;
+
+#define MLX5_DMA_MMO_MAX_SIZE	(1ULL << 31)
+struct mlx5_dma_mmo_caps {
+	uint8_t dma_mmo_sq:1; /* Indicates that RC and DCI support DMA MMO */
+	uint8_t dma_mmo_qp:1;
+	uint64_t dma_max_size;
 };
 
 struct mlx5_context {
@@ -274,9 +340,16 @@ struct mlx5_context {
 	}				uidx_table[MLX5_UIDX_TABLE_SIZE];
 	pthread_mutex_t                 uidx_table_mutex;
 
+	struct {
+		struct mlx5_mkey      **table;
+		int			refcnt;
+	}				mkey_table[MLX5_MKEY_TABLE_SIZE];
+	pthread_mutex_t			mkey_table_mutex;
+
 	struct mlx5_uar_info		uar[MLX5_MAX_UARS];
-	struct mlx5_db_page	       *db_list;
-	pthread_mutex_t			db_list_mutex;
+	struct list_head		dbr_available_pages;
+	cl_qmap_t		        dbr_map;
+	pthread_mutex_t			dbr_map_mutex;
 	int				cache_line_size;
 	int				max_sq_desc_sz;
 	int				max_rq_desc_sz;
@@ -303,7 +376,7 @@ struct mlx5_context {
 	} core_clock;
 	void			       *hca_core_clock;
 	const struct mlx5_ib_clock_info *clock_info_page;
-	struct ibv_tso_caps		cached_tso_caps;
+	struct mlx5_ib_tso_caps		cached_tso_caps;
 	int				cmds_supp_uhw;
 	uint32_t			uar_size;
 	uint64_t			vendor_cap_flags; /* Use enum mlx5_vendor_cap_flags */
@@ -311,9 +384,17 @@ struct mlx5_context {
 	struct mlx5dv_ctx_allocators	extern_alloc;
 	struct mlx5dv_sw_parsing_caps	sw_parsing_caps;
 	struct mlx5dv_striding_rq_caps	striding_rq_caps;
+	struct mlx5dv_dci_streams_caps  dci_streams_caps;
 	uint32_t			tunnel_offloads_caps;
 	struct mlx5_packet_pacing_caps	packet_pacing_caps;
-	struct mlx5_lag_caps		lag_caps;
+	struct mlx5_entropy_caps	entropy_caps;
+	struct mlx5_qos_caps		qos_caps;
+	struct mlx5_hca_cap_2_caps	hca_cap_2_caps;
+	uint64_t			general_obj_types_caps;
+	uint8_t				qpc_extension_cap:1;
+	struct mlx5dv_sig_caps		sig_caps;
+	struct mlx5_dma_mmo_caps	dma_mmo_caps;
+	struct mlx5dv_crypto_caps	crypto_caps;
 	pthread_mutex_t			dyn_bfregs_mutex; /* protects the dynamic bfregs allocation */
 	uint32_t			num_dyn_bfregs;
 	uint32_t			max_num_legacy_dyn_uar_sys_page;
@@ -325,30 +406,27 @@ struct mlx5_context {
 	__be32                          dump_fill_mkey_be;
 	uint32_t			flags;
 	struct list_head		dyn_uar_bf_list;
-	struct list_head		dyn_uar_nc_list;
+	struct list_head		dyn_uar_db_list;
 	struct list_head		dyn_uar_qp_shared_list;
 	struct list_head		dyn_uar_qp_dedicated_list;
 	uint16_t			qp_max_dedicated_uuars;
 	uint16_t			qp_alloc_dedicated_uuars;
 	uint16_t			qp_max_shared_uuars;
 	uint16_t			qp_alloc_shared_uuars;
-	struct mlx5_bf			*cq_uar;
+	struct mlx5_bf			*nc_uar;
 	void				*cq_uar_reg;
-};
-
-struct mlx5_bitmap {
-	uint32_t		last;
-	uint32_t		top;
-	uint32_t		max;
-	uint32_t		avail;
-	uint32_t		mask;
-	unsigned long	       *table;
+	struct mlx5_reserved_qpns	reserved_qpns;
+	uint8_t				qp_data_in_order_cap:1;
+	struct mlx5_dv_context_ops	*dv_ctx_ops;
+	struct mlx5dv_devx_obj		*crypto_login;
+	pthread_mutex_t			crypto_login_mutex;
 };
 
 struct mlx5_hugetlb_mem {
 	int			shmid;
 	void		       *shmaddr;
-	struct mlx5_bitmap	bitmap;
+	unsigned long		*bitmap;
+	unsigned long		bmp_size;
 	struct list_node	entry;
 };
 
@@ -374,6 +452,11 @@ struct mlx5_pd {
 	uint32_t			pdn;
 	atomic_int			refcount;
 	struct mlx5_pd			*mprotection_domain;
+	struct {
+		void			*opaque_buf;
+		struct ibv_mr		*opaque_mr;
+		pthread_mutex_t		opaque_mr_mutex;
+	};
 };
 
 struct mlx5_parent_domain {
@@ -399,6 +482,7 @@ enum {
 	MLX5_CQ_FLAGS_SINGLE_THREADED = 1 << 4,
 	MLX5_CQ_FLAGS_DV_OWNED = 1 << 5,
 	MLX5_CQ_FLAGS_TM_SYNC_REQ = 1 << 6,
+	MLX5_CQ_FLAGS_RAW_WQE = 1 << 7,
 };
 
 struct mlx5_cq {
@@ -426,7 +510,7 @@ struct mlx5_cq {
 	struct mlx5_srq			*cur_srq;
 	struct mlx5_cqe64		*cqe64;
 	uint32_t			flags;
-	int			umr_opcode;
+	int				cached_opcode;
 	struct mlx5dv_clock_info	last_clock_info;
 	struct ibv_pd			*parent_domain;
 };
@@ -502,6 +586,11 @@ struct mlx5_wq {
 	unsigned			tail;
 	unsigned			cur_post;
 	int				max_gs;
+	/*
+	 * Equal to max_gs when qp is in RTS state for sq, or in INIT state for
+	 * rq, equal to -1 otherwise, used to verify qp_state in data path.
+	 */
+	int				qp_state_max_gs;
 	int				wqe_shift;
 	int				offset;
 	void			       *qend;
@@ -529,6 +618,7 @@ struct mlx5_bf {
 	uint8_t				dyn_alloc_uar : 1;
 	uint8_t				mmaped_entry : 1;
 	uint8_t				nc_mode : 1;
+	uint8_t				singleton : 1;
 	uint8_t				qp_dedicated : 1;
 	uint8_t				qp_shared : 1;
 	uint32_t			count;
@@ -553,6 +643,7 @@ struct mlx5_mr {
 
 enum mlx5_qp_flags {
 	MLX5_QP_FLAGS_USE_UNDERLAY = 0x01,
+	MLX5_QP_FLAGS_DRAIN_SIGERR = 0x02,
 };
 
 struct mlx5_qp {
@@ -571,6 +662,7 @@ struct mlx5_qp {
 	/* Start of new post send API specific fields */
 	bool				inl_wqe;
 	uint8_t				cur_setters_cnt;
+	uint8_t				num_mkey_setters;
 	uint8_t				fm_cache_rb;
 	int				err;
 	int				nreq;
@@ -579,6 +671,7 @@ struct mlx5_qp {
 	void				*cur_eth;
 	void				*cur_data;
 	struct mlx5_wqe_ctrl_seg	*cur_ctrl;
+	struct mlx5_mkey		*cur_mkey;
 	/* End of new post send API specific fields */
 
 	uint8_t				fm_cache;
@@ -615,12 +708,17 @@ struct mlx5_qp {
 	 * write to the set_ece will clear this field.
 	 */
 	uint32_t			get_ece;
+
+	uint8_t				need_mmo_enable:1;
 };
 
 struct mlx5_ah {
 	struct ibv_ah			ibv_ah;
 	struct mlx5_wqe_av		av;
 	bool				kern_ah;
+	pthread_mutex_t			mutex;
+	uint8_t				is_global;
+	struct mlx5dv_devx_obj		*ah_qp_mapping;
 };
 
 struct mlx5_rwq {
@@ -661,6 +759,12 @@ struct mlx5dv_flow_matcher {
 	uint32_t handle;
 };
 
+struct mlx5_steering_anchor {
+	struct ibv_context *context;
+	uint32_t handle;
+	struct mlx5dv_steering_anchor sa;
+};
+
 enum mlx5_devx_obj_type {
 	MLX5_DEVX_FLOW_TABLE		= 1,
 	MLX5_DEVX_FLOW_COUNTER		= 2,
@@ -671,6 +775,9 @@ enum mlx5_devx_obj_type {
 	MLX5_DEVX_FLOW_GROUP		= 7,
 	MLX5_DEVX_FLOW_TABLE_ENTRY	= 8,
 	MLX5_DEVX_FLOW_SAMPLER		= 9,
+	MLX5_DEVX_ASO_FIRST_HIT		= 10,
+	MLX5_DEVX_ASO_FLOW_METER	= 11,
+	MLX5_DEVX_ASO_CT		= 12,
 };
 
 struct mlx5dv_devx_obj {
@@ -679,6 +786,8 @@ struct mlx5dv_devx_obj {
 	enum mlx5_devx_obj_type type;
 	uint32_t object_id;
 	uint64_t rx_icm_addr;
+	uint8_t log_obj_range;
+	void *priv;
 };
 
 struct mlx5_var_obj {
@@ -701,10 +810,103 @@ struct mlx5_devx_umem {
 	size_t size;
 };
 
+/*
+ * The BSF state is used in signature and crypto attributes. It indicates the
+ * state the attributes are in, and helps constructing the signature and crypto
+ * BSFs during MKey configuration.
+ *
+ * INIT state indicates that the attributes are not configured.
+ * RESET state indicates that the attributes should be reset in current MKey
+ * configuration.
+ * SET state indicates that the attributes have been set before.
+ * UPDATED state indicates that the attributes have been updated in current
+ * MKey configuration.
+ */
+enum mlx5_mkey_bsf_state {
+	MLX5_MKEY_BSF_STATE_INIT,
+	MLX5_MKEY_BSF_STATE_RESET,
+	MLX5_MKEY_BSF_STATE_SET,
+	MLX5_MKEY_BSF_STATE_UPDATED,
+};
+
+struct mlx5_psv {
+	uint32_t index;
+	struct mlx5dv_devx_obj *devx_obj;
+};
+
+enum mlx5_sig_type {
+	MLX5_SIG_TYPE_NONE = 0,
+	MLX5_SIG_TYPE_CRC,
+	MLX5_SIG_TYPE_T10DIF,
+};
+
+struct mlx5_sig_block_domain {
+	enum mlx5_sig_type sig_type;
+	union {
+		struct mlx5dv_sig_t10dif dif;
+		struct mlx5dv_sig_crc crc;
+	} sig;
+	enum mlx5dv_block_size block_size;
+};
+
+struct mlx5_sig_block_attr {
+	struct mlx5_sig_block_domain mem;
+	struct mlx5_sig_block_domain wire;
+	uint32_t flags;
+	uint8_t check_mask;
+	uint8_t copy_mask;
+};
+
+struct mlx5_sig_block {
+	struct mlx5_psv *mem_psv;
+	struct mlx5_psv *wire_psv;
+	struct mlx5_sig_block_attr attr;
+	enum mlx5_mkey_bsf_state state;
+};
+
+struct mlx5_sig_err {
+	uint16_t syndrome;
+	uint64_t expected;
+	uint64_t actual;
+	uint64_t offset;
+	uint8_t sig_type;
+	uint8_t domain;
+};
+
+struct mlx5_sig_ctx {
+	struct mlx5_sig_block block;
+	struct mlx5_sig_err err_info;
+	uint32_t err_count;
+	bool err_exists;
+	bool err_count_updated;
+};
+
+struct mlx5_crypto_attr {
+	enum mlx5dv_crypto_standard crypto_standard;
+	bool encrypt_on_tx;
+	enum mlx5dv_signature_crypto_order signature_crypto_order;
+	enum mlx5dv_block_size data_unit_size;
+	char initial_tweak[16];
+	struct mlx5dv_dek *dek;
+	char keytag[8];
+	enum mlx5_mkey_bsf_state state;
+};
+
 struct mlx5_mkey {
 	struct mlx5dv_mkey dv_mkey;
 	struct mlx5dv_devx_obj *devx_obj;
 	uint16_t num_desc;
+	uint64_t length;
+	struct mlx5_sig_ctx *sig;
+	struct mlx5_crypto_attr *crypto;
+};
+
+struct mlx5dv_crypto_login_obj {
+	struct mlx5dv_devx_obj *devx_obj;
+};
+
+struct mlx5dv_dek {
+	struct mlx5dv_devx_obj *devx_obj;
 };
 
 struct mlx5_devx_event_channel {
@@ -721,12 +923,35 @@ struct mlx5_flow_action_attr_aux {
 	uint32_t offset;
 };
 
+struct mlx5dv_sched_node {
+	struct mlx5dv_sched_node *parent;
+	struct mlx5dv_devx_obj *obj;
+};
+
+struct mlx5dv_sched_leaf {
+	struct mlx5dv_sched_node *parent;
+	struct mlx5dv_devx_obj *obj;
+};
+
+struct mlx5_devx_msi_vector {
+	struct mlx5dv_devx_msi_vector dv_msi;
+	struct ibv_context *ibctx;
+};
+
+struct mlx5_devx_eq {
+	struct mlx5dv_devx_eq dv_eq;
+	struct ibv_context *ibctx;
+	uint64_t iova;
+	size_t size;
+	int eqn;
+};
+
 struct ibv_flow *
-__mlx5dv_create_flow(struct mlx5dv_flow_matcher *flow_matcher,
-		     struct mlx5dv_flow_match_parameters *match_value,
-		     size_t num_actions,
-		     struct mlx5dv_flow_action_attr actions_attr[],
-		     struct mlx5_flow_action_attr_aux actions_attr_aux[]);
+_mlx5dv_create_flow(struct mlx5dv_flow_matcher *flow_matcher,
+		    struct mlx5dv_flow_match_parameters *match_value,
+		    size_t num_actions,
+		    struct mlx5dv_flow_action_attr actions_attr[],
+		    struct mlx5_flow_action_attr_aux actions_attr_aux[]);
 
 extern int mlx5_stall_num_loop;
 extern int mlx5_stall_cq_poll_min;
@@ -849,7 +1074,11 @@ static inline struct mlx5_flow *to_mflow(struct ibv_flow *flow_id)
 	return container_of(flow_id, struct mlx5_flow, flow_id);
 }
 
-bool is_mlx5_dev(struct ibv_device *device);
+bool is_mlx5_vfio_dev(struct ibv_device *device);
+
+void mlx5_open_debug_file(FILE **dbg_fp);
+void mlx5_close_debug_file(FILE *dbg_fp);
+void mlx5_set_debug_mask(void);
 
 int mlx5_alloc_buf(struct mlx5_buf *buf, size_t size, int page_size);
 void mlx5_free_buf(struct mlx5_buf *buf);
@@ -879,8 +1108,7 @@ __be32 *mlx5_alloc_dbrec(struct mlx5_context *context, struct ibv_pd *pd,
 void mlx5_free_db(struct mlx5_context *context, __be32 *db, struct ibv_pd *pd,
 		  bool custom_alloc);
 
-int mlx5_query_device(struct ibv_context *context,
-		       struct ibv_device_attr *attr);
+void mlx5_query_device_ctx(struct mlx5_context *mctx);
 int mlx5_query_device_ex(struct ibv_context *context,
 			 const struct ibv_query_device_ex_input *input,
 			 struct ibv_device_attr_ex *attr,
@@ -901,6 +1129,8 @@ void mlx5_async_event(struct ibv_context *context,
 struct ibv_mr *mlx5_alloc_null_mr(struct ibv_pd *pd);
 struct ibv_mr *mlx5_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
 			   uint64_t hca_va, int access);
+struct ibv_mr *mlx5_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset, size_t length,
+				  uint64_t iova, int fd, int access);
 int mlx5_rereg_mr(struct verbs_mr *mr, int flags, struct ibv_pd *pd, void *addr,
 		  size_t length, int access);
 int mlx5_dereg_mr(struct verbs_mr *mr);
@@ -929,7 +1159,7 @@ int mlx5_arm_cq(struct ibv_cq *cq, int solicited);
 void mlx5_cq_event(struct ibv_cq *cq);
 void __mlx5_cq_clean(struct mlx5_cq *cq, uint32_t qpn, struct mlx5_srq *srq);
 void mlx5_cq_clean(struct mlx5_cq *cq, uint32_t qpn, struct mlx5_srq *srq);
-void mlx5_cq_resize_copy_cqes(struct mlx5_cq *cq);
+void mlx5_cq_resize_copy_cqes(struct mlx5_context *mctx, struct mlx5_cq *cq);
 
 struct ibv_srq *mlx5_create_srq(struct ibv_pd *pd,
 				 struct ibv_srq_init_attr *attr);
@@ -950,10 +1180,13 @@ struct ibv_qp *mlx5_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr);
 int mlx5_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
 		  int attr_mask,
 		  struct ibv_qp_init_attr *init_attr);
+int mlx5_query_qp_data_in_order(struct ibv_qp *qp, enum ibv_wr_opcode op,
+				uint32_t flags);
 int mlx5_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr,
 		   int attr_mask);
 int mlx5_modify_qp_rate_limit(struct ibv_qp *qp,
 			      struct ibv_qp_rate_limit_attr *attr);
+int mlx5_modify_qp_drain_sigerr(struct ibv_qp *qp);
 int mlx5_destroy_qp(struct ibv_qp *qp);
 void mlx5_init_qp_indices(struct mlx5_qp *qp);
 void mlx5_init_rwq_indices(struct mlx5_rwq *rwq);
@@ -976,6 +1209,10 @@ struct mlx5_srq *mlx5_find_srq(struct mlx5_context *ctx, uint32_t srqn);
 int mlx5_store_srq(struct mlx5_context *ctx, uint32_t srqn,
 		   struct mlx5_srq *srq);
 void mlx5_clear_srq(struct mlx5_context *ctx, uint32_t srqn);
+struct mlx5_mkey *mlx5_find_mkey(struct mlx5_context *ctx, uint32_t mkeyn);
+int mlx5_store_mkey(struct mlx5_context *ctx, uint32_t mkeyn,
+		    struct mlx5_mkey *mkey);
+void mlx5_clear_mkey(struct mlx5_context *ctx, uint32_t mkeyn);
 struct ibv_ah *mlx5_create_ah(struct ibv_pd *pd, struct ibv_ah_attr *attr);
 int mlx5_destroy_ah(struct ibv_ah *ah);
 int mlx5_alloc_av(struct mlx5_pd *pd, struct ibv_ah_attr *attr,
@@ -1047,21 +1284,28 @@ int mlx5_advise_mr(struct ibv_pd *pd,
 		   uint32_t flags,
 		   struct ibv_sge *sg_list,
 		   uint32_t num_sges);
+struct ibv_dm *mlx5_import_dm(struct ibv_context *context,
+			      uint32_t dm_handle);
+void mlx5_unimport_dm(struct ibv_dm *dm);
 struct ibv_mr *mlx5_import_mr(struct ibv_pd *pd,
 			      uint32_t mr_handle);
 void mlx5_unimport_mr(struct ibv_mr *mr);
 struct ibv_pd *mlx5_import_pd(struct ibv_context *context,
 			      uint32_t pd_handle);
 void mlx5_unimport_pd(struct ibv_pd *pd);
+void mlx5_qp_fill_wr_complete_error(struct mlx5_qp *mqp);
+void mlx5_qp_fill_wr_complete_real(struct mlx5_qp *mqp);
 int mlx5_qp_fill_wr_pfns(struct mlx5_qp *mqp,
 			 const struct ibv_qp_init_attr_ex *attr,
 			 const struct mlx5dv_qp_init_attr *mlx5_attr);
 void clean_dyn_uars(struct ibv_context *context);
-struct mlx5_bf *mlx5_attach_dedicated_uar(struct ibv_context *context,
-					  uint32_t flags);
+void mlx5_set_singleton_nc_uar(struct ibv_context *context);
 
 int mlx5_set_ece(struct ibv_qp *qp, struct ibv_ece *ece);
 int mlx5_query_ece(struct ibv_qp *qp, struct ibv_ece *ece);
+
+struct mlx5_psv *mlx5_create_psv(struct ibv_pd *pd);
+int mlx5_destroy_psv(struct mlx5_psv *psv);
 
 static inline void *mlx5_find_uidx(struct mlx5_context *ctx, uint32_t uidx)
 {
@@ -1079,7 +1323,7 @@ static inline int mlx5_spin_lock(struct mlx5_spinlock *lock)
 		return pthread_spin_lock(&lock->lock);
 
 	if (unlikely(lock->in_use)) {
-		fprintf(stderr, "*** ERROR: multithreading vilation ***\n"
+		fprintf(stderr, "*** ERROR: multithreading violation ***\n"
 			"You are running a multithreaded application but\n"
 			"you set MLX5_SINGLE_THREADED=1. Please unset it.\n");
 		abort();
@@ -1179,5 +1423,203 @@ static inline bool srq_has_waitq(struct mlx5_srq *srq)
 }
 
 bool srq_cooldown_wqe(struct mlx5_srq *srq, int ind);
+
+struct mlx5_dv_context_ops {
+	int (*devx_general_cmd)(struct ibv_context *context, const void *in,
+				size_t inlen, void *out, size_t outlen);
+
+	struct mlx5dv_devx_obj *(*devx_obj_create)(struct ibv_context *context,
+						   const void *in, size_t inlen,
+						   void *out, size_t outlen);
+	int (*devx_obj_query)(struct mlx5dv_devx_obj *obj, const void *in,
+			      size_t inlen, void *out, size_t outlen);
+	int (*devx_obj_modify)(struct mlx5dv_devx_obj *obj, const void *in,
+			       size_t inlen, void *out, size_t outlen);
+	int (*devx_obj_destroy)(struct mlx5dv_devx_obj *obj);
+
+	int (*devx_query_eqn)(struct ibv_context *context, uint32_t vector,
+			      uint32_t *eqn);
+
+	int (*devx_cq_query)(struct ibv_cq *cq, const void *in, size_t inlen,
+			     void *out, size_t outlen);
+	int (*devx_cq_modify)(struct ibv_cq *cq, const void *in, size_t inlen,
+			      void *out, size_t outlen);
+
+	int (*devx_qp_query)(struct ibv_qp *qp, const void *in, size_t inlen,
+			     void *out, size_t outlen);
+	int (*devx_qp_modify)(struct ibv_qp *qp, const void *in, size_t inlen,
+			      void *out, size_t outlen);
+
+	int (*devx_srq_query)(struct ibv_srq *srq, const void *in, size_t inlen,
+			      void *out, size_t outlen);
+	int (*devx_srq_modify)(struct ibv_srq *srq, const void *in, size_t inlen,
+			       void *out, size_t outlen);
+
+	int (*devx_wq_query)(struct ibv_wq *wq, const void *in, size_t inlen,
+			     void *out, size_t outlen);
+	int (*devx_wq_modify)(struct ibv_wq *wq, const void *in, size_t inlen,
+			      void *out, size_t outlen);
+
+	int (*devx_ind_tbl_query)(struct ibv_rwq_ind_table *ind_tbl, const void *in,
+				  size_t inlen, void *out, size_t outlen);
+	int (*devx_ind_tbl_modify)(struct ibv_rwq_ind_table *ind_tbl, const void *in,
+				   size_t inlen, void *out, size_t outlen);
+
+	struct mlx5dv_devx_cmd_comp *(*devx_create_cmd_comp)(struct ibv_context *context);
+	void (*devx_destroy_cmd_comp)(struct mlx5dv_devx_cmd_comp *cmd_comp);
+
+	struct mlx5dv_devx_event_channel *(*devx_create_event_channel)(struct ibv_context *context,
+								       enum mlx5dv_devx_create_event_channel_flags flags);
+	void (*devx_destroy_event_channel)(struct mlx5dv_devx_event_channel *dv_event_channel);
+	int (*devx_subscribe_devx_event)(struct mlx5dv_devx_event_channel *dv_event_channel,
+					 struct mlx5dv_devx_obj *obj,
+					 uint16_t events_sz,
+					 uint16_t events_num[],
+					 uint64_t cookie);
+	int (*devx_subscribe_devx_event_fd)(struct mlx5dv_devx_event_channel *dv_event_channel,
+					    int fd,
+					    struct mlx5dv_devx_obj *obj,
+					    uint16_t event_num);
+
+	int (*devx_obj_query_async)(struct mlx5dv_devx_obj *obj, const void *in,
+				    size_t inlen, size_t outlen,
+				    uint64_t wr_id,
+				    struct mlx5dv_devx_cmd_comp *cmd_comp);
+	int (*devx_get_async_cmd_comp)(struct mlx5dv_devx_cmd_comp *cmd_comp,
+				       struct mlx5dv_devx_async_cmd_hdr *cmd_resp,
+				       size_t cmd_resp_len);
+
+	ssize_t (*devx_get_event)(struct mlx5dv_devx_event_channel *event_channel,
+				  struct mlx5dv_devx_async_event_hdr *event_data,
+				  size_t event_resp_len);
+
+	struct mlx5dv_devx_uar *(*devx_alloc_uar)(struct ibv_context *context,
+						       uint32_t flags);
+	void (*devx_free_uar)(struct mlx5dv_devx_uar *dv_devx_uar);
+
+	struct mlx5dv_devx_umem *(*devx_umem_reg)(struct ibv_context *context,
+						  void *addr, size_t size, uint32_t access);
+	struct mlx5dv_devx_umem *(*devx_umem_reg_ex)(struct ibv_context *ctx,
+						     struct mlx5dv_devx_umem_in *umem_in);
+	int (*devx_umem_dereg)(struct mlx5dv_devx_umem *dv_devx_umem);
+
+	struct mlx5dv_mkey *(*create_mkey)(struct mlx5dv_mkey_init_attr *mkey_init_attr);
+	int (*destroy_mkey)(struct mlx5dv_mkey *dv_mkey);
+
+	int (*crypto_login)(struct ibv_context *context,
+			    struct mlx5dv_crypto_login_attr *login_attr);
+	int (*crypto_login_query_state)(struct ibv_context *context,
+					enum mlx5dv_crypto_login_state *state);
+	int (*crypto_logout)(struct ibv_context *context);
+
+	struct mlx5dv_crypto_login_obj *(*crypto_login_create)(
+		struct ibv_context *context,
+		struct mlx5dv_crypto_login_attr_ex *login_attr);
+	int (*crypto_login_query)(
+		struct mlx5dv_crypto_login_obj *crypto_login,
+		struct mlx5dv_crypto_login_query_attr *query_attr);
+	int (*crypto_login_destroy)(
+		struct mlx5dv_crypto_login_obj *crypto_login);
+
+	struct mlx5dv_dek *(*dek_create)(struct ibv_context *context,
+					 struct mlx5dv_dek_init_attr *init_attr);
+	int (*dek_query)(struct mlx5dv_dek *dek,
+			 struct mlx5dv_dek_attr *dek_attr);
+	int (*dek_destroy)(struct mlx5dv_dek *dek);
+
+	struct mlx5dv_var *(*alloc_var)(struct ibv_context *context, uint32_t flags);
+	void (*free_var)(struct mlx5dv_var *dv_var);
+
+	struct mlx5dv_pp *(*pp_alloc)(struct ibv_context *context, size_t pp_context_sz,
+				      const void *pp_context, uint32_t flags);
+	void (*pp_free)(struct mlx5dv_pp *dv_pp);
+
+	int (*init_obj)(struct mlx5dv_obj *obj, uint64_t obj_type);
+	struct ibv_cq_ex *(*create_cq)(struct ibv_context *context,
+				       struct ibv_cq_init_attr_ex *cq_attr,
+				       struct mlx5dv_cq_init_attr *mlx5_cq_attr);
+	struct ibv_qp *(*create_qp)(struct ibv_context *context,
+				    struct ibv_qp_init_attr_ex *qp_attr,
+				    struct mlx5dv_qp_init_attr *mlx5_qp_attr);
+	struct mlx5dv_qp_ex *(*qp_ex_from_ibv_qp_ex)(struct ibv_qp_ex *qp); /* Is this needed? */
+	struct ibv_wq *(*create_wq)(struct ibv_context *context,
+				    struct ibv_wq_init_attr *attr,
+				    struct mlx5dv_wq_init_attr *mlx5_wq_attr);
+
+	struct ibv_dm *(*alloc_dm)(struct ibv_context *context,
+				   struct ibv_alloc_dm_attr *dm_attr,
+				   struct mlx5dv_alloc_dm_attr *mlx5_dm_attr);
+	void *(*dm_map_op_addr)(struct ibv_dm *dm, uint8_t op);
+
+	struct ibv_flow_action *
+	(*create_flow_action_esp)(struct ibv_context *ctx,
+				  struct ibv_flow_action_esp_attr *esp,
+				  struct mlx5dv_flow_action_esp *mlx5_attr);
+	struct ibv_flow_action *
+	(*create_flow_action_modify_header)(struct ibv_context *ctx,
+					    size_t actions_sz,
+					    uint64_t actions[],
+					    enum mlx5dv_flow_table_type ft_type);
+	struct ibv_flow_action *
+	(*create_flow_action_packet_reformat)(struct ibv_context *ctx,
+					      size_t data_sz,
+					      void *data,
+					      enum mlx5dv_flow_action_packet_reformat_type reformat_type,
+					      enum mlx5dv_flow_table_type ft_type);
+
+	struct mlx5dv_flow_matcher *(*create_flow_matcher)(struct ibv_context *context,
+							   struct mlx5dv_flow_matcher_attr *attr);
+	int (*destroy_flow_matcher)(struct mlx5dv_flow_matcher *flow_matcher);
+	struct ibv_flow *(*create_flow)(struct mlx5dv_flow_matcher *flow_matcher,
+					struct mlx5dv_flow_match_parameters *match_value,
+					size_t num_actions,
+					struct mlx5dv_flow_action_attr actions_attr[],
+					struct mlx5_flow_action_attr_aux actions_attr_aux[]);
+
+	struct mlx5dv_steering_anchor *(*create_steering_anchor)(struct ibv_context *conterxt,
+								 struct mlx5dv_steering_anchor_attr *attr);
+	int (*destroy_steering_anchor)(struct mlx5_steering_anchor *sa);
+	int (*query_device)(struct ibv_context *ctx_in, struct mlx5dv_context *attrs_out);
+
+	int (*query_qp_lag_port)(struct ibv_qp *qp, uint8_t *port_num,
+				 uint8_t *active_port_num);
+	int (*modify_qp_lag_port)(struct ibv_qp *qp, uint8_t port_num);
+	int (*modify_qp_udp_sport)(struct ibv_qp *qp, uint16_t udp_sport);
+
+	struct mlx5dv_sched_node *(*sched_node_create)(struct ibv_context *ctx,
+						       const struct mlx5dv_sched_attr *attr);
+	struct mlx5dv_sched_leaf *(*sched_leaf_create)(struct ibv_context *ctx,
+						       const struct mlx5dv_sched_attr *attr);
+	int (*sched_node_modify)(struct mlx5dv_sched_node *node,
+				 const struct mlx5dv_sched_attr *attr);
+	int (*sched_leaf_modify)(struct mlx5dv_sched_leaf *leaf,
+				 const struct mlx5dv_sched_attr *attr);
+	int (*sched_node_destroy)(struct mlx5dv_sched_node *node);
+	int (*sched_leaf_destroy)(struct mlx5dv_sched_leaf *leaf);
+	int (*modify_qp_sched_elem)(struct ibv_qp *qp,
+				    const struct mlx5dv_sched_leaf *requestor,
+				    const struct mlx5dv_sched_leaf *responder);
+	int (*reserved_qpn_alloc)(struct ibv_context *ctx, uint32_t *qpn);
+	int (*reserved_qpn_dealloc)(struct ibv_context *ctx, uint32_t qpn);
+	int (*set_context_attr)(struct ibv_context *ibv_ctx,
+				enum mlx5dv_set_ctx_attr_type type, void *attr);
+	int (*get_clock_info)(struct ibv_context *ctx_in,
+			      struct mlx5dv_clock_info *clock_info);
+	int (*query_port)(struct ibv_context *context, uint32_t port_num,
+			  struct mlx5dv_port *info, size_t info_len);
+	int (*map_ah_to_qp)(struct ibv_ah *ah, uint32_t qp_num);
+	struct mlx5dv_devx_msi_vector *(*devx_alloc_msi_vector)(struct ibv_context *ibctx);
+	int (*devx_free_msi_vector)(struct mlx5dv_devx_msi_vector *msi);
+	struct mlx5dv_devx_eq *(*devx_create_eq)(struct ibv_context *ibctx,
+						 const void *in, size_t inlen,
+						 void *out, size_t outlen);
+	int (*devx_destroy_eq)(struct mlx5dv_devx_eq *eq);
+};
+
+struct mlx5_dv_context_ops *mlx5_get_dv_ops(struct ibv_context *context);
+void mlx5_set_dv_ctx_ops(struct mlx5_dv_context_ops *ops);
+
+int mlx5_cmd_status_to_err(uint8_t status);
+int mlx5_get_cmd_status_err(int err, void *out);
 
 #endif /* MLX5_H */

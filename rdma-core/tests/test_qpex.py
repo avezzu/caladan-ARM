@@ -3,9 +3,10 @@ import random
 import errno
 
 from pyverbs.qp import QPCap, QPInitAttrEx, QPAttr, QPEx, QP
-from pyverbs.pyverbs_error import PyverbsRDMAError
+from pyverbs.pyverbs_error import PyverbsError, PyverbsRDMAError
 from pyverbs.mr import MW, MWBindInfo
 from pyverbs.base import inc_rkey
+from tests.utils import wc_status_to_str
 import pyverbs.enums as e
 
 from tests.base import UDResources, RCResources, RDMATestCase, XRCResources
@@ -30,7 +31,9 @@ def create_qp_ex(agr_obj, qp_type, send_flags):
     if qp_type == e.IBV_QPT_RC:
         qp_attr.qp_access_flags = e.IBV_ACCESS_REMOTE_WRITE | \
                                   e.IBV_ACCESS_REMOTE_READ | \
-                                  e.IBV_ACCESS_REMOTE_ATOMIC
+                                  e.IBV_ACCESS_REMOTE_ATOMIC | \
+                                  e.IBV_ACCESS_FLUSH_GLOBAL | \
+                                  e.IBV_ACCESS_FLUSH_PERSISTENT
     try:
         # We don't have capability bits for this
         qp = QPEx(agr_obj.ctx, qia, qp_attr)
@@ -105,6 +108,24 @@ class QpExXRCSendImm(XRCResources):
             self.psns.append(random.getrandbits(24))
 
 
+class QpExRCFlush(RCResources):
+    ptype = e.IBV_FLUSH_GLOBAL
+    level = e.IBV_FLUSH_RANGE
+    def create_qps(self):
+        create_qp_ex(self, e.IBV_QPT_RC, e.IBV_QP_EX_WITH_FLUSH | e.IBV_QP_EX_WITH_RDMA_WRITE)
+
+    def create_mr(self):
+        self.mr = u.create_custom_mr(self, e.IBV_ACCESS_FLUSH_GLOBAL | e.IBV_ACCESS_REMOTE_WRITE)
+
+
+class QpExRCAtomicWrite(RCResources):
+    def create_qps(self):
+        create_qp_ex(self, e.IBV_QPT_RC, e.IBV_QP_EX_WITH_ATOMIC_WRITE)
+
+    def create_mr(self):
+        self.mr = u.create_custom_mr(self, e.IBV_ACCESS_REMOTE_WRITE)
+
+
 class QpExRCRDMAWrite(RCResources):
     def create_qps(self):
         create_qp_ex(self, e.IBV_QPT_RC, e.IBV_QP_EX_WITH_RDMA_WRITE)
@@ -146,10 +167,12 @@ class QpExRCAtomicFetchAdd(RCResources):
 
 class QpExRCBindMw(RCResources):
     def create_qps(self):
-        create_qp_ex(self, e.IBV_QPT_RC, e.IBV_QP_EX_WITH_BIND_MW)
+        create_qp_ex(self, e.IBV_QPT_RC, e.IBV_QP_EX_WITH_RDMA_WRITE |
+                     e.IBV_QP_EX_WITH_BIND_MW)
 
     def create_mr(self):
-        self.mr = u.create_custom_mr(self, e.IBV_ACCESS_REMOTE_WRITE)
+        self.mr = u.create_custom_mr(self, e.IBV_ACCESS_REMOTE_WRITE |
+                                     e.IBV_ACCESS_MW_BIND)
 
 
 class QpExTestCase(RDMATestCase):
@@ -161,6 +184,8 @@ class QpExTestCase(RDMATestCase):
                         'xrc_send': QpExXRCSend, 'ud_send_imm': QpExUDSendImm,
                         'rc_send_imm': QpExRCSendImm,
                         'xrc_send_imm': QpExXRCSendImm,
+                        'rc_flush': QpExRCFlush,
+                        'rc_atomic_write': QpExRCAtomicWrite,
                         'rc_write': QpExRCRDMAWrite,
                         'rc_write_imm': QpExRCRDMAWriteImm,
                         'rc_read': QpExRCRDMARead,
@@ -175,14 +200,24 @@ class QpExTestCase(RDMATestCase):
             server = self.qp_dict[qp_type](self.dev_name, self.ib_port,
                                            self.gid_index)
         except PyverbsRDMAError as ex:
-           if ex.error_code == errno.EOPNOTSUPP:
+            if ex.error_code == errno.EOPNOTSUPP:
                 raise unittest.SkipTest('Create player with {} is not supported'.format(qp_type))
+            raise ex
         client.pre_run(server.psns, server.qps_num)
         server.pre_run(client.psns, client.qps_num)
+        self.client = client
+        self.server = server
         return client, server
 
     def test_qp_ex_ud_send(self):
         client, server = self.create_players('ud_send')
+        u.traffic(client, server, self.iters, self.gid_index, self.ib_port,
+                  new_send=True, send_op=e.IBV_QP_EX_WITH_SEND)
+
+    def test_qp_ex_ud_zero_size(self):
+        client, server = self.create_players('ud_send')
+        client.msg_size = 0
+        server.msg_size = 0
         u.traffic(client, server, self.iters, self.gid_index, self.ib_port,
                   new_send=True, send_op=e.IBV_QP_EX_WITH_SEND)
 
@@ -209,6 +244,51 @@ class QpExTestCase(RDMATestCase):
         client, server = self.create_players('xrc_send_imm')
         u.xrc_traffic(client, server, send_op=e.IBV_QP_EX_WITH_SEND_WITH_IMM)
 
+    def test_qp_ex_rc_flush(self):
+        client, server = self.create_players('rc_flush')
+
+        client.rkey = server.mr.rkey
+        server.rkey = client.mr.rkey
+        client.raddr = server.mr.buf
+        server.raddr = client.mr.buf
+        wcs = u.flush_traffic(client, server, self.iters, self.gid_index,
+                              self.ib_port, new_send=True,
+                              send_op=e.IBV_QP_EX_WITH_FLUSH)
+        if wcs[0].status != e.IBV_WC_SUCCESS:
+            raise PyverbsError(f'Unexpected {wc_status_to_str(wcs[0].status)}')
+
+        client.level = e.IBV_FLUSH_MR
+        wcs = u.flush_traffic(client, server, self.iters, self.gid_index,
+                              self.ib_port, new_send=True,
+                              send_op=e.IBV_QP_EX_WITH_FLUSH)
+        if wcs[0].status != e.IBV_WC_SUCCESS:
+            raise PyverbsError(f'Unexpected {wc_status_to_str(wcs[0].status)}')
+
+    def test_qp_ex_rc_flush_type_violate(self):
+        client, server = self.create_players('rc_flush')
+
+        client.rkey = server.mr.rkey
+        server.rkey = client.mr.rkey
+        client.raddr = server.mr.buf
+        server.raddr = client.mr.buf
+        client.ptype = e.IBV_FLUSH_PERSISTENT
+        wcs = u.flush_traffic(client, server, self.iters, self.gid_index,
+                              self.ib_port, new_send=True,
+                              send_op=e.IBV_QP_EX_WITH_FLUSH)
+        if wcs[0].status != e.IBV_WC_REM_ACCESS_ERR:
+            raise PyverbsError(f'Expected errors {wc_status_to_str(e.IBV_WC_REM_ACCESS_ERR)} - got {wc_status_to_str(wcs[0].status)}')
+
+    def test_qp_ex_rc_atomic_write(self):
+        client, server = self.create_players('rc_atomic_write')
+        client.msg_size = 8
+        server.msg_size = 8
+        client.rkey = server.mr.rkey
+        server.rkey = client.mr.rkey
+        client.raddr = server.mr.buf
+        server.raddr = client.mr.buf
+        u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
+                       new_send=True, send_op=e.IBV_QP_EX_WITH_ATOMIC_WRITE)
+
     def test_qp_ex_rc_rdma_write(self):
         client, server = self.create_players('rc_write')
         client.rkey = server.mr.rkey
@@ -227,12 +307,35 @@ class QpExTestCase(RDMATestCase):
         u.traffic(client, server, self.iters, self.gid_index, self.ib_port,
                   new_send=True, send_op=e.IBV_QP_EX_WITH_RDMA_WRITE_WITH_IMM)
 
+    def test_qp_ex_rc_rdma_write_zero_length(self):
+        client, server = self.create_players('rc_write')
+        client.msg_size = 0
+        server.msg_size = 0
+        client.rkey = server.mr.rkey
+        server.rkey = client.mr.rkey
+        client.raddr = server.mr.buf
+        server.raddr = client.mr.buf
+        u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
+                       new_send=True, send_op=e.IBV_QP_EX_WITH_RDMA_WRITE)
+
     def test_qp_ex_rc_rdma_read(self):
         client, server = self.create_players('rc_read')
         client.rkey = server.mr.rkey
         server.rkey = client.mr.rkey
         client.raddr = server.mr.buf
         server.raddr = client.mr.buf
+        server.mr.write('s' * server.msg_size, server.msg_size)
+        u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
+                       new_send=True, send_op=e.IBV_QP_EX_WITH_RDMA_READ)
+
+    def test_qp_ex_rc_rdma_read_zero_size(self):
+        client, server = self.create_players('rc_read')
+        client.rkey = server.mr.rkey
+        server.rkey = client.mr.rkey
+        client.raddr = server.mr.buf
+        server.raddr = client.mr.buf
+        client.msg_size = 0
+        server.msg_size = 0
         server.mr.write('s' * server.msg_size, server.msg_size)
         u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
                        new_send=True, send_op=e.IBV_QP_EX_WITH_RDMA_READ)
@@ -246,8 +349,9 @@ class QpExTestCase(RDMATestCase):
         client.raddr = server.mr.buf
         server.raddr = client.mr.buf
         server.mr.write('s' * 8, 8)
-        u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
-                       new_send=True, send_op=e.IBV_QP_EX_WITH_ATOMIC_CMP_AND_SWP)
+        u.atomic_traffic(client, server, self.iters, self.gid_index,
+                         self.ib_port, new_send=True,
+                         send_op=e.IBV_QP_EX_WITH_ATOMIC_CMP_AND_SWP)
 
     def test_qp_ex_rc_atomic_fetch_add(self):
         client, server = self.create_players('rc_fetch_add')
@@ -258,5 +362,62 @@ class QpExTestCase(RDMATestCase):
         client.raddr = server.mr.buf
         server.raddr = client.mr.buf
         server.mr.write('s' * 8, 8)
-        u.rdma_traffic(client, server, self.iters, self.gid_index, self.ib_port,
-                       new_send=True, send_op=e.IBV_QP_EX_WITH_ATOMIC_FETCH_AND_ADD)
+        u.atomic_traffic(client, server, self.iters, self.gid_index,
+                         self.ib_port, new_send=True,
+                         send_op=e.IBV_QP_EX_WITH_ATOMIC_FETCH_AND_ADD)
+
+    def test_qp_ex_rc_bind_mw(self):
+        """
+        Verify bind memory window operation using the new post_send API.
+        Instead of checking through regular pingpong style traffic, we'll
+        do as follows:
+        - Register an MR with remote write access
+        - Bind a MW without remote write permission to the MR
+        - Verify that remote write fails
+        Since it's a unique flow, it's an integral part of that test rather
+        than a utility method.
+        """
+        client, server = self.create_players('rc_bind_mw')
+        client_sge = u.get_send_elements(client, False)[1]
+        # Create a MW and bind it
+        server.qp.wr_start()
+        server.qp.wr_id = 0x123
+        server.qp.wr_flags = e.IBV_SEND_SIGNALED
+        bind_info = MWBindInfo(server.mr, server.mr.buf, server.mr.length,
+                               e.IBV_ACCESS_LOCAL_WRITE)
+        try:
+            mw = MW(server.pd, mw_type=e.IBV_MW_TYPE_2)
+        except PyverbsRDMAError as ex:
+            if ex.error_code == errno.EOPNOTSUPP:
+                raise unittest.SkipTest('Memory Window allocation is not supported')
+            raise ex
+        new_key = inc_rkey(mw.rkey)
+        server.qp.wr_bind_mw(mw, new_key, bind_info)
+        server.qp.wr_complete()
+        u.poll_cq(server.cq)
+        # Verify that remote write fails
+        client.qp.wr_start()
+        client.qp.wr_id = 0x124
+        client.qp.wr_flags = e.IBV_SEND_SIGNALED
+        client.qp.wr_rdma_write(new_key, server.mr.buf)
+        client.qp.wr_set_sge(client_sge)
+        client.qp.wr_complete()
+        wcs = u._poll_cq(client.cq)
+        if wcs[0].status != e.IBV_WC_REM_ACCESS_ERR:
+            raise PyverbsRDMAError(f'Completion status is {wc_status_to_str(wcs[0].status)}')
+
+    def test_post_receive_qp_state_bad_flow(self):
+        self.create_players(qp_type='ud_send')
+        u.post_rq_state_bad_flow(self)
+
+    def test_post_send_qp_state_bad_flow(self):
+        self.create_players(qp_type='ud_send')
+        u.post_sq_state_bad_flow(self)
+
+    def test_full_rq_bad_flow(self):
+        self.create_players(qp_type='ud_send')
+        u.full_rq_bad_flow(self)
+
+    def test_rq_with_larger_sgl_bad_flow(self):
+        self.create_players(qp_type='ud_send')
+        u.create_rq_with_larger_sgl_bad_flow(self)

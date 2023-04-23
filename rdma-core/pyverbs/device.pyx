@@ -13,6 +13,7 @@ from pyverbs.cq cimport CQEX, CQ, CompChannel
 from .pyverbs_error import PyverbsUserError
 from pyverbs.base import PyverbsRDMAErrno
 from pyverbs.base cimport close_weakrefs
+from pyverbs.wq cimport WQ, RwqIndTable
 cimport pyverbs.libibverbs_enums as e
 cimport pyverbs.libibverbs as v
 cimport pyverbs.librdmacm as cm
@@ -115,6 +116,12 @@ cdef class Context(PyverbsCM):
         self.vars = weakref.WeakSet()
         self.uars = weakref.WeakSet()
         self.pps = weakref.WeakSet()
+        self.sched_nodes = weakref.WeakSet()
+        self.sched_leafs = weakref.WeakSet()
+        self.dr_domains = weakref.WeakSet()
+        self.wqs = weakref.WeakSet()
+        self.rwq_ind_tbls = weakref.WeakSet()
+        self.crypto_logins = weakref.WeakSet()
 
         self.name = kwargs.get('name')
         provider_attr = kwargs.get('attr')
@@ -122,12 +129,14 @@ cdef class Context(PyverbsCM):
         cmd_fd = kwargs.get('cmd_fd')
         if cmid is not None:
             self.context = cmid.id.verbs
+            self.name = str(v.ibv_get_device_name(self.context.device).decode('utf-8'))
             cmid.ctx = self
             return
         if cmd_fd is not None:
             self.context = v.ibv_import_device(cmd_fd)
             if self.context == NULL:
                 raise PyverbsRDMAErrno('Failed to import device')
+            self.name = str(v.ibv_get_device_name(self.context.device).decode('utf-8'))
             return
 
         if self.name is None:
@@ -165,13 +174,19 @@ cdef class Context(PyverbsCM):
 
     cpdef close(self):
         if self.context != NULL:
-            self.logger.debug('Closing Context')
-            close_weakrefs([self.qps, self.ccs, self.cqs, self.dms, self.pds,
-                            self.xrcds, self.vars])
+            if self.logger:
+                self.logger.debug('Closing Context')
+            close_weakrefs([self.qps, self.crypto_logins, self.rwq_ind_tbls, self.wqs, self.ccs, self.cqs,
+                            self.dms, self.pds, self.xrcds, self.vars, self.sched_leafs,
+                            self.sched_nodes, self.dr_domains])
             rc = v.ibv_close_device(self.context)
             if rc != 0:
                 raise PyverbsRDMAErrno(f'Failed to close device {self.name}')
             self.context = NULL
+
+    @property
+    def context(self):
+        return <object>self.context
 
     @property
     def num_comp_vectors(self):
@@ -289,6 +304,24 @@ cdef class Context(PyverbsCM):
                                    f'{port_num} in index {gid_index}', rc)
         return entry
 
+    def query_rt_values_ex(self, comp_mask=v.IBV_VALUES_MASK_RAW_CLOCK):
+        """
+        Query an RDMA device for some real time values.
+        :return: A tuple of the real time values according to comp_mask (sec, nsec)
+        """
+        cdef v.ibv_values_ex *val
+        val = <v.ibv_values_ex *>malloc(sizeof(v.ibv_values_ex))
+        val.comp_mask = comp_mask
+        rc = v.ibv_query_rt_values_ex(self.context, val)
+        if rc != 0:
+            raise PyverbsRDMAError(f'Failed to query real time values', rc)
+        if val.comp_mask != comp_mask:
+            raise PyverbsRDMAError(f'Failed to query real time values with requested comp_mask')
+        nsec = (<v.ibv_values_ex *>val).raw_clock.tv_nsec
+        sec = (<v.ibv_values_ex *>val).raw_clock.tv_sec
+        free(val)
+        return sec, nsec
+
     cdef add_ref(self, obj):
         if isinstance(obj, PD):
             self.pds.add(obj)
@@ -302,8 +335,19 @@ cdef class Context(PyverbsCM):
             self.qps.add(obj)
         elif isinstance(obj, XRCD):
             self.xrcds.add(obj)
+        elif isinstance(obj, WQ):
+            self.wqs.add(obj)
+        elif isinstance(obj, RwqIndTable):
+            self.rwq_ind_tbls.add(obj)
         else:
             raise PyverbsError('Unrecognized object type')
+
+    def get_async_event(self):
+        event = AsyncEvent()
+        rc = v.ibv_get_async_event(self.context, &event.event)
+        if rc != 0:
+            raise PyverbsRDMAError(f'Failed to get async event', rc)
+        return event
 
     @property
     def cmd_fd(self):
@@ -671,6 +715,9 @@ cdef class DeviceAttrEx(PyverbsObject):
     @property
     def max_dm_size(self):
         return self.dev_attr.max_dm_size
+    @property
+    def phys_port_cnt_ex(self):
+        return self.dev_attr.phys_port_cnt_ex
 
 
 cdef class AllocDmAttr(PyverbsObject):
@@ -714,40 +761,64 @@ cdef class AllocDmAttr(PyverbsObject):
 
 
 cdef class DM(PyverbsCM):
-    def __init__(self, Context context, AllocDmAttr dm_attr not None):
+    def __init__(self, Context context, AllocDmAttr dm_attr=None, **kwargs):
         """
         Allocate a device (direct) memory.
         :param context: The context of the device on which to allocate memory
         :param dm_attr: Attributes that define the DM
+        :param kwargs: Arguments:
+            * *handle*
+                A valid kernel handle for a DM object in the given context.
+                If passed, the DM will be imported and associated with the
+                given context using ibv_import_dm.
         :return: A DM object on success
         """
         super().__init__()
         self.dm_mrs = weakref.WeakSet()
-        device_attr = context.query_device_ex()
-        if device_attr.max_dm_size <= 0:
-            raise PyverbsUserError('Device doesn\'t support dm allocation')
-        self.dm = v.ibv_alloc_dm(<v.ibv_context*>context.context,
-                                 &dm_attr.alloc_dm_attr)
-        if self.dm == NULL:
-            raise PyverbsRDMAErrno('Failed to allocate device memory of size '
-                                   '{size}. Max available size {max}.'
-                                   .format(size=dm_attr.length,
-                                           max=device_attr.max_dm_size))
+
+        dm_handle = kwargs.get('handle')
+        if dm_handle is not None:
+            self.dm = v.ibv_import_dm(context.context, dm_handle)
+            if self.dm == NULL:
+                raise PyverbsRDMAErrno('Failed to import DM')
+            self._is_imported = True
+        else:
+            device_attr = context.query_device_ex()
+            if device_attr.max_dm_size <= 0:
+                raise PyverbsUserError('Device doesn\'t support dm allocation')
+            self.dm = v.ibv_alloc_dm(<v.ibv_context*>context.context,
+                                     &dm_attr.alloc_dm_attr)
+            if self.dm == NULL:
+                raise PyverbsRDMAErrno('Failed to allocate device memory of size '
+                                       '{size}. Max available size {max}.'
+                                       .format(size=dm_attr.length,
+                                               max=device_attr.max_dm_size))
         self.context = context
         context.add_ref(self)
+
+    def unimport(self):
+        v.ibv_unimport_dm(self.dm)
+        self.close()
 
     def __dealloc__(self):
         self.close()
 
     cpdef close(self):
+        """
+        Closes the underlying C object of the DM.
+        In case of an imported DM, the DM won't be freed, and it's kept for the
+        original DM object, in order to prevent double free by Python GC.
+        """
         if self.dm != NULL:
-            self.logger.debug('Closing DM')
+            if self.logger:
+                self.logger.debug('Closing DM')
             close_weakrefs([self.dm_mrs])
-            rc = v.ibv_free_dm(self.dm)
-            if rc != 0:
-                raise PyverbsRDMAError('Failed to free dm', rc)
+            if not self._is_imported:
+                rc = v.ibv_free_dm(self.dm)
+                if rc != 0:
+                    raise PyverbsRDMAError('Failed to free dm', rc)
             self.dm = NULL
-        self.context = None
+            self.context = None
 
     cdef add_ref(self, obj):
         if isinstance(obj, DMMR):
@@ -769,6 +840,10 @@ cdef class DM(PyverbsCM):
         res = data[:length]
         free(data)
         return res
+
+    @property
+    def handle(self):
+        return self.dm.handle
 
 
 cdef class PortAttr(PyverbsObject):
@@ -913,6 +988,24 @@ cdef class GIDEntry(PyverbsObject):
             print_format.format('Ndev ifindex', self.ndev_ifindex)
 
 
+cdef class AsyncEvent(PyverbsObject):
+    def __init__(self, event_type=0):
+        super().__init__()
+        self.event.event_type = event_type
+
+    def ack(self):
+        v.ibv_ack_async_event(&self.event)
+
+    @property
+    def event_type(self):
+        return self.event.event_type
+
+    def __str__(self):
+        print_format = '{:<24}: {:<20}\n'
+        return print_format.format('Event Type', translate_event_type(
+                                   self.event.event_type))
+
+
 def translate_gid_type(gid_type):
     types = {e.IBV_GID_TYPE_IB: 'IB', e.IBV_GID_TYPE_ROCE_V1: 'RoCEv1',
              e.IBV_GID_TYPE_ROCE_V2: 'RoCEv2'}
@@ -1014,7 +1107,8 @@ def translate_port_cap_flags2(flags):
          e.IBV_PORT_VIRT_SUP: 'IBV_PORT_VIRT_SUP',
          e.IBV_PORT_SWITCH_PORT_STATE_TABLE_SUP: 'IBV_PORT_SWITCH_PORT_STATE_TABLE_SUP',
          e.IBV_PORT_LINK_WIDTH_2X_SUP: 'IBV_PORT_LINK_WIDTH_2X_SUP',
-         e.IBV_PORT_LINK_SPEED_HDR_SUP: 'IBV_PORT_LINK_SPEED_HDR_SUP'}
+         e.IBV_PORT_LINK_SPEED_HDR_SUP: 'IBV_PORT_LINK_SPEED_HDR_SUP',
+         e.IBV_PORT_LINK_SPEED_NDR_SUP: 'IBV_PORT_LINK_SPEED_NDR_SUP'}
     return str_from_flags(flags, l)
 
 
@@ -1075,7 +1169,8 @@ def width_to_str(width):
 
 def speed_to_str(speed):
     l = {0: '0.0 Gbps', 1: '2.5 Gbps', 2: '5.0 Gbps', 4: '5.0 Gbps',
-         8: '10.0 Gbps', 16: '14.0 Gbps', 32: '25.0 Gbps', 64: '50.0 Gbps'}
+         8: '10.0 Gbps', 16: '14.0 Gbps', 32: '25.0 Gbps', 64: '50.0 Gbps',
+         128: '100.0 Gbps'}
     try:
         return '{s} ({n})'.format(s=l[speed], n=speed)
     except KeyError:
@@ -1131,3 +1226,32 @@ def rdma_get_devices():
         devices.append(Device(name, guid, node, transport, index))
     cm.rdma_free_devices(ctx_list)
     return devices
+
+
+def translate_event_type(event_type):
+    types = {
+        e.IBV_EVENT_CQ_ERR: 'IBV_EVENT_CQ_ERR',
+        e.IBV_EVENT_QP_FATAL: 'IBV_EVENT_QP_FATAL',
+        e.IBV_EVENT_QP_REQ_ERR: 'IBV_EVENT_QP_REQ_ERR',
+        e.IBV_EVENT_QP_ACCESS_ERR: 'IBV_EVENT_QP_ACCESS_ERR',
+        e.IBV_EVENT_COMM_EST: 'IBV_EVENT_COMM_EST',
+        e.IBV_EVENT_SQ_DRAINED: 'IBV_EVENT_SQ_DRAINED',
+        e.IBV_EVENT_PATH_MIG: 'IBV_EVENT_PATH_MIG',
+        e.IBV_EVENT_PATH_MIG_ERR: 'IBV_EVENT_PATH_MIG_ERR',
+        e.IBV_EVENT_DEVICE_FATAL: 'IBV_EVENT_DEVICE_FATAL',
+        e.IBV_EVENT_PORT_ACTIVE: 'IBV_EVENT_PORT_ACTIVE',
+        e.IBV_EVENT_PORT_ERR: 'IBV_EVENT_PORT_ERR',
+        e.IBV_EVENT_LID_CHANGE: 'IBV_EVENT_LID_CHANGE',
+        e.IBV_EVENT_PKEY_CHANGE: 'IBV_EVENT_PKEY_CHANGE',
+        e.IBV_EVENT_SM_CHANGE: 'IBV_EVENT_SM_CHANGE',
+        e.IBV_EVENT_SRQ_ERR: 'IBV_EVENT_SRQ_ERR',
+        e.IBV_EVENT_SRQ_LIMIT_REACHED: 'IBV_EVENT_SRQ_LIMIT_REACHED',
+        e.IBV_EVENT_QP_LAST_WQE_REACHED: '.IBV_EVENT_QP_LAST_WQE_REACHED',
+        e.IBV_EVENT_CLIENT_REREGISTER: 'IBV_EVENT_CLIENT_REREGISTER',
+        e.IBV_EVENT_GID_CHANGE: 'IBV_EVENT_GID_CHANGE',
+        e.IBV_EVENT_WQ_FATAL: 'IBV_EVENT_WQ_FATAL'
+    }
+    try:
+        return types[event_type]
+    except KeyError:
+        return f'Unknown event_type ({event_type})'

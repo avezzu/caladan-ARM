@@ -1,7 +1,7 @@
 #
 # spec file for package rdma-core
 #
-# Copyright (c) 2019 SUSE LINUX GmbH, Nuernberg, Germany.
+# Copyright (c) 2022 SUSE LLC
 #
 # All modifications and additions to the file contributed by third parties
 # remain the property of their copyright owners, unless otherwise agreed
@@ -21,18 +21,24 @@
 %define with_static %{?_with_static: 1} %{?!_with_static: 0}
 %define with_pyverbs %{?_with_pyverbs: 1} %{?!_with_pyverbs: 0}
 
+%if 0%{?suse_version} < 1550 && 0%{?sle_version} <= 150300
+# systemd-rpm-macros is wrong in 15.3 and below
+%define _modprobedir /lib/modprobe.d
+%endif
+
 %define         git_ver %{nil}
 Name:           rdma-core
-Version:        32.0
+Version:        46.0
 Release:        0
 Summary:        RDMA core userspace libraries and daemons
-License:        GPL-2.0-only OR BSD-2-Clause
+License:        BSD-2-Clause OR GPL-2.0-only
 Group:          Productivity/Networking/Other
 
 %define efa_so_major    1
 %define verbs_so_major  1
 %define rdmacm_so_major 1
 %define umad_so_major   3
+%define mana_so_major   1
 %define mlx4_so_major   1
 %define mlx5_so_major   1
 %define ibnetdisc_major 5
@@ -42,6 +48,7 @@ Group:          Productivity/Networking/Other
 %define  verbs_lname  libibverbs%{verbs_so_major}
 %define  rdmacm_lname librdmacm%{rdmacm_so_major}
 %define  umad_lname   libibumad%{umad_so_major}
+%define  mana_lname   libmana%{mana_so_major}
 %define  mlx4_lname   libmlx4-%{mlx4_so_major}
 %define  mlx5_lname   libmlx5-%{mlx5_so_major}
 
@@ -49,17 +56,23 @@ Group:          Productivity/Networking/Other
 %define dma_coherent 1
 %endif
 
+%global modprobe_d_files 50-libmlx4.conf truescale.conf %{?dma_coherent:mlx4.conf}
+
 # Almost everything is licensed under the OFA dual GPLv2, 2 Clause BSD license
 #  providers/ipathverbs/ Dual licensed using a BSD license with an extra patent clause
 #  providers/rxe/ Incorporates code from ipathverbs and contains the patent clause
 #  providers/hfi1verbs Uses the 3 Clause BSD license
-Url:            https://github.com/linux-rdma/rdma-core
+URL:            https://github.com/linux-rdma/rdma-core
 Source:         rdma-core-%{version}%{git_ver}.tar.gz
 Source1:        baselibs.conf
 BuildRequires:  binutils
 BuildRequires:  cmake >= 2.8.11
 BuildRequires:  gcc
 BuildRequires:  pandoc
+# perl is needed for the proper rpm macros
+%if %{?suse_version} > 1550
+BuildRequires:  perl
+%endif
 BuildRequires:  pkgconfig
 BuildRequires:  python3-base
 BuildRequires:  python3-docutils
@@ -85,6 +98,7 @@ BuildRequires:  pkgconfig(systemd)
 Requires:       kmod
 Requires:       systemd
 Requires:       udev
+Recommends:     rdma-ndd
 
 # SUSE previously shipped rdma as a stand-alone
 # package which we're supplanting here.
@@ -105,7 +119,7 @@ Obsoletes:      ofed < %{version}
 # To force build without the use of curl-mini, --without=curlmini
 # should be passed to rpmbuild
 %bcond_without curlmini
-%if 0%{?suse_version} >= 1330
+%if 0%{?suse_version} >= 1330 && 0%{?suse_version} < 1550
 %if %{with curlmini}
 BuildRequires:  curl-mini
 %endif
@@ -145,6 +159,7 @@ Requires:       %{umad_lname} = %{version}-%{release}
 Requires:       %{verbs_lname} = %{version}-%{release}
 %if 0%{?dma_coherent}
 Requires:       %{efa_lname} = %{version}-%{release}
+Requires:       %{mana_lname} = %{version}-%{release}
 Requires:       %{mlx4_lname} = %{version}-%{release}
 Requires:       %{mlx5_lname} = %{version}-%{release}
 %endif
@@ -185,8 +200,8 @@ Requires:       %{name}%{?_isa} = %{version}-%{release}
 Obsoletes:      libcxgb4-rdmav2 < %{version}-%{release}
 Obsoletes:      libefa-rdmav2 < %{version}-%{release}
 Obsoletes:      libhfi1verbs-rdmav2 < %{version}-%{release}
-Obsoletes:      libi40iw-rdmav2 < %{version}-%{release}
 Obsoletes:      libipathverbs-rdmav2 < %{version}-%{release}
+Obsoletes:      libmana-rdmav2 < %{version}-%{release}
 Obsoletes:      libmlx4-rdmav2 < %{version}-%{release}
 Obsoletes:      libmlx5-rdmav2 < %{version}-%{release}
 Obsoletes:      libmthca-rdmav2 < %{version}-%{release}
@@ -194,6 +209,7 @@ Obsoletes:      libocrdma-rdmav2 < %{version}-%{release}
 Obsoletes:      librxe-rdmav2 < %{version}-%{release}
 %if 0%{?dma_coherent}
 Requires:       %{efa_lname} = %{version}-%{release}
+Requires:       %{mana_lname} = %{version}-%{release}
 Requires:       %{mlx4_lname} = %{version}-%{release}
 Requires:       %{mlx5_lname} = %{version}-%{release}
 %endif
@@ -213,8 +229,9 @@ Device-specific plug-in ibverbs userspace drivers are included:
 - libefa: Amazon Elastic Fabric Adapter
 - libhfi1: Intel Omni-Path HFI
 - libhns: HiSilicon Hip06 SoC
-- libi40iw: Intel Ethernet Connection X722 RDMA
 - libipathverbs: QLogic InfiniPath HCA
+- libirdma: Intel Ethernet Connection RDMA
+- libmana: Microsoft Azure Network Adapter
 - libmlx4: Mellanox ConnectX-3 InfiniBand HCA
 - libmlx5: Mellanox Connect-IB/X-4+ InfiniBand HCA
 - libmthca: Mellanox InfiniBand HCA
@@ -238,6 +255,13 @@ Group:          System/Libraries
 
 %description -n %efa_lname
 This package contains the efa runtime library.
+
+%package -n %mana_lname
+Summary:        MANA runtime library
+Group:          System/Libraries
+
+%description -n %mana_lname
+This package contains the mana runtime library.
 
 %package -n %mlx4_lname
 Summary:        MLX4 runtime library
@@ -389,8 +413,6 @@ Pyverbs is a Cython-based Python API over libibverbs, providing an
 easy, object-oriented access to IB verbs.
 
 %prep
-# Make sure LTO is disable as rdma-core fails to compile with LTO enabled
-%define _lto_cflags %{nil}
 %setup -q -n  %{name}-%{version}%{git_ver}
 
 %build
@@ -409,16 +431,17 @@ easy, object-oriented access to IB verbs.
          -DCMAKE_BUILD_TYPE=Release \
          -DCMAKE_INSTALL_BINDIR:PATH=%{_bindir} \
          -DCMAKE_INSTALL_SBINDIR:PATH=%{_sbindir} \
-         -DCMAKE_INSTALL_LIBDIR:PATH=%{_libdir} \
+         -DCMAKE_INSTALL_LIBDIR:PATH=%{_lib} \
          -DCMAKE_INSTALL_LIBEXECDIR:PATH=%{_libexecdir} \
          -DCMAKE_INSTALL_LOCALSTATEDIR:PATH=%{_localstatedir} \
          -DCMAKE_INSTALL_SHAREDSTATEDIR:PATH=%{_sharedstatedir} \
-         -DCMAKE_INSTALL_INCLUDEDIR:PATH=%{_includedir} \
+         -DCMAKE_INSTALL_INCLUDEDIR:PATH=include \
          -DCMAKE_INSTALL_INFODIR:PATH=%{_infodir} \
          -DCMAKE_INSTALL_MANDIR:PATH=%{_mandir} \
+		 -DCMAKE_INSTALL_MODPROBEDIR:PATH=%{_modprobedir} \
          -DCMAKE_INSTALL_SYSCONFDIR:PATH=%{_sysconfdir} \
          -DCMAKE_INSTALL_SYSTEMD_SERVICEDIR:PATH=%{_unitdir} \
-         -DCMAKE_INSTALL_SYSTEMD_BINDIR:PATH=%{_libexecdir}/systemd \
+         -DCMAKE_INSTALL_SYSTEMD_BINDIR:PATH=%{_prefix}/lib/systemd \
          -DCMAKE_INSTALL_INITDDIR:PATH=%{_initddir} \
          -DCMAKE_INSTALL_RUNDIR:PATH=%{_rundir} \
          -DCMAKE_INSTALL_DOCDIR:PATH=%{_docdir}/%{name}-%{version} \
@@ -445,22 +468,26 @@ cd build
 cd ..
 mkdir -p %{buildroot}/%{_sysconfdir}/rdma
 
-%global dracutlibdir %%{_libexecdir}/dracut/
-%global sysmodprobedir %%{_sysconfdir}/modprobe.d
+%global dracutlibdir %%{_prefix}/lib/dracut/
 
 mkdir -p %{buildroot}%{_udevrulesdir}
 mkdir -p %{buildroot}%{dracutlibdir}/modules.d/05rdma
-mkdir -p %{buildroot}%{sysmodprobedir}
+mkdir -p %{buildroot}%{_modprobedir}
 mkdir -p %{buildroot}%{_unitdir}
 
 # Port type setup for mlx4 dual port cards
+install -D -m0644 redhat/rdma.mlx4.sys.modprobe %{buildroot}%{_modprobedir}/50-libmlx4.conf
 install -D -m0644 redhat/rdma.mlx4.conf %{buildroot}/%{_sysconfdir}/rdma/mlx4.conf
-sed 's%/usr/libexec%/usr/lib%g' redhat/rdma.mlx4.sys.modprobe > %{buildroot}%{sysmodprobedir}/50-libmlx4.conf
-chmod 0644 %{buildroot}%{sysmodprobedir}/50-libmlx4.conf
+chmod 0644 %{buildroot}%{_modprobedir}/mlx4.conf
 install -D -m0755 redhat/rdma.mlx4-setup.sh %{buildroot}%{_libexecdir}/mlx4-setup.sh
 
 # Dracut file for IB support during boot
 install -D -m0644 suse/module-setup.sh %{buildroot}%{dracutlibdir}/modules.d/05rdma/module-setup.sh
+
+%if "%{_libexecdir}" != "/usr/libexec"
+sed 's-/usr/libexec-%{_libexecdir}-g' -i %{buildroot}%{_modprobedir}/50-libmlx4.conf
+sed 's-/usr/libexec-%{_libexecdir}-g' -i %{buildroot}%{dracutlibdir}/modules.d/05rdma/module-setup.sh
+%endif
 
 # ibacm
 cd build
@@ -478,6 +505,9 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 
 %post -n %efa_lname -p /sbin/ldconfig
 %postun -n %efa_lname -p /sbin/ldconfig
+
+%post -n %mana_lname -p /sbin/ldconfig
+%postun -n %mana_lname -p /sbin/ldconfig
 
 %post -n %mlx4_lname -p /sbin/ldconfig
 %postun -n %mlx4_lname -p /sbin/ldconfig
@@ -497,10 +527,24 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %post -n libibmad%{mad_major} -p /sbin/ldconfig
 %postun -n libibmad%{mad_major} -p /sbin/ldconfig
 
+%pre
+# Avoid restoring outdated stuff in posttrans
+for _f in %{?modprobe_d_files}; do
+    [ ! -f "/etc/modprobe.d/${_f}.rpmsave" ] || \
+        mv -f "/etc/modprobe.d/${_f}.rpmsave" "/etc/modprobe.d/${_f}.rpmsave.old" || :
+done
+
 %post
 # we ship udev rules, so trigger an update.
 %{_bindir}/udevadm trigger --subsystem-match=infiniband --action=change || true
 %{_bindir}/udevadm trigger --subsystem-match=infiniband_mad --action=change || true
+
+%posttrans
+# Migration of modprobe.conf files to _modprobedir
+for _f in %{?modprobe_d_files}; do
+    [ ! -f "/etc/modprobe.d/${_f}.rpmsave" ] || \
+        mv -fv "/etc/modprobe.d/${_f}.rpmsave" "/etc/modprobe.d/${_f}" || :
+done
 
 #
 # ibacm
@@ -560,6 +604,8 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 
 %post -n rdma-ndd
 %service_add_post rdma-ndd.service
+# we ship udev rules, so trigger an update.
+%{_bindir}/udevadm trigger --subsystem-match=infiniband --action=change || true
 
 %postun -n rdma-ndd
 %service_del_postun rdma-ndd.service
@@ -570,9 +616,8 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %dir %{_sysconfdir}/rdma/modules
 %dir %{_docdir}/%{name}-%{version}
 %dir %{_udevrulesdir}
-%dir %{_sysconfdir}/udev
-%dir %{_sysconfdir}/udev/rules.d
-%dir %{_sysconfdir}/modprobe.d
+%dir %{_modprobedir}
+%doc %{_docdir}/%{name}-%{version}/70-persistent-ipoib.rules
 %doc %{_docdir}/%{name}-%{version}/README.md
 %doc %{_docdir}/%{name}-%{version}/udev.md
 %config(noreplace) %{_sysconfdir}/rdma/mlx4.conf
@@ -582,10 +627,9 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %config(noreplace) %{_sysconfdir}/rdma/modules/rdma.conf
 %config(noreplace) %{_sysconfdir}/rdma/modules/roce.conf
 %if 0%{?dma_coherent}
-%config(noreplace) %{_sysconfdir}/modprobe.d/mlx4.conf
+%{_modprobedir}/mlx4.conf
 %endif
-%config(noreplace) %{_sysconfdir}/modprobe.d/truescale.conf
-%config(noreplace) %{_sysconfdir}/udev/rules.d/70-persistent-ipoib.rules
+%{_modprobedir}/truescale.conf
 %{_unitdir}/rdma-hw.target
 %{_unitdir}/rdma-load-modules@.service
 %dir %{dracutlibdir}
@@ -598,7 +642,7 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %{_udevrulesdir}/90-rdma-hw-modules.rules
 %{_udevrulesdir}/90-rdma-ulp-modules.rules
 %{_udevrulesdir}/90-rdma-umad.rules
-%{sysmodprobedir}/50-libmlx4.conf
+%{_modprobedir}/50-libmlx4.conf
 %{_libexecdir}/mlx4-setup.sh
 %{_libexecdir}/truescale-serdes.cmds
 %license COPYING.*
@@ -624,9 +668,11 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %{_mandir}/man7/rdma_cm.*
 %if 0%{?dma_coherent}
 %{_mandir}/man3/efadv*
+%{_mandir}/man3/manadv*
 %{_mandir}/man3/mlx5dv*
 %{_mandir}/man3/mlx4dv*
 %{_mandir}/man7/efadv*
+%{_mandir}/man7/manadv*
 %{_mandir}/man7/mlx5dv*
 %{_mandir}/man7/mlx4dv*
 %endif
@@ -658,6 +704,10 @@ rm -rf %{buildroot}/%{_sbindir}/srp_daemon.sh
 %files -n %efa_lname
 %defattr(-,root,root)
 %{_libdir}/libefa*.so.*
+
+%files -n %mana_lname
+%defattr(-,root,root)
+%{_libdir}/libmana*.so.*
 
 %files -n %mlx4_lname
 %defattr(-,root,root)

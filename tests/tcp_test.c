@@ -63,7 +63,7 @@ static void do_server(void *arg)
 	tcpqueue_t *q;
 	int ret;
     char* buf = malloc(buf_size);
-    FILE *f = fopen("//home//blueadmin//caladan//bmarks//TCP//result.txt", "w");
+    //FILE *f = fopen("//home//blueadmin//caladan//bmarks//TCP//result.txt", "w");
 
 	laddr.ip = 0;
 	laddr.port = NETPERF_PORT;
@@ -91,8 +91,8 @@ static void do_server(void *arg)
 
 	uint64_t end = microtime();
 
-    fprintf(f, "%lf",(read * (8e-9))/((end - start) * (1e-6)));
-    fclose(f);
+    printf("%lf",(read * (8e-9))/((end - start) * (1e-6)));
+    //fclose(f);
     free(buf);
 
 	tcp_abort(c);

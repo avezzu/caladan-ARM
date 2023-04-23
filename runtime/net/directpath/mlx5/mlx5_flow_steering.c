@@ -355,7 +355,7 @@ static int mlx5_steer_flows(unsigned int *new_fg_assignment)
 	struct ibv_qp *new_qp, *old_qp;
 
 
-	postsend_lock(dmn);
+	//postsend_lock(dmn);
 
 	for (i = 0; i < nr_rxq; i++) {
 		if (new_fg_assignment[i] == fg_qp_assignment[i])
@@ -365,15 +365,15 @@ static int mlx5_steer_flows(unsigned int *new_fg_assignment)
 		new_qp = rxqs[new_fg_assignment[i]].qp;
 		old_qp = rxqs[fg_qp_assignment[i]].qp;
 
-		ret = switch_qp_action(tbl->default_egress_rule, dmn,
-			    new_qp, old_qp);
+		//ret = switch_qp_action(tbl->default_egress_rule, dmn,
+		//	    new_qp, old_qp);
 		if (unlikely(ret))
 			break;
 
 		fg_qp_assignment[i] = new_fg_assignment[i];
 	}
 
-	postsend_unlock(dmn);
+	//postsend_unlock(dmn);
 
 	return ret;
 

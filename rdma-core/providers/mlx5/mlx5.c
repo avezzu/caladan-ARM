@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012 Mellanox Technologies, Inc.  All rights reserved.
+ * Copyright (c) 2020 Intel Corporation.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,8 +50,10 @@
 #include "mlx5-abi.h"
 #include "wqe.h"
 #include "mlx5_ifc.h"
+#include "mlx5_vfio.h"
 
 static void mlx5_free_context(struct ibv_context *ibctx);
+static bool is_mlx5_dev(struct ibv_device *device);
 
 #ifndef CPU_OR
 #define CPU_OR(x, y, z) do {} while (0)
@@ -61,7 +64,7 @@ static void mlx5_free_context(struct ibv_context *ibctx);
 #endif
 
 #define HCA(v, d) VERBS_PCI_MATCH(PCI_VENDOR_ID_##v, d, NULL)
-static const struct verbs_match_ent hca_table[] = {
+const struct verbs_match_ent mlx5_hca_table[] = {
 	VERBS_DRIVER_ID(RDMA_DRIVER_MLX5),
 	HCA(MELLANOX, 0x1011),	/* MT4113 Connect-IB */
 	HCA(MELLANOX, 0x1012),	/* Connect-IB Virtual Function */
@@ -79,9 +82,12 @@ static const struct verbs_match_ent hca_table[] = {
 	HCA(MELLANOX, 0x101e),	/* ConnectX family mlx5Gen Virtual Function */
 	HCA(MELLANOX, 0x101f),	/* ConnectX-6 LX */
 	HCA(MELLANOX, 0x1021),  /* ConnectX-7 */
+	HCA(MELLANOX, 0x1023),  /* ConnectX-8 */
 	HCA(MELLANOX, 0xa2d2),	/* BlueField integrated ConnectX-5 network controller */
 	HCA(MELLANOX, 0xa2d3),	/* BlueField integrated ConnectX-5 network controller VF */
 	HCA(MELLANOX, 0xa2d6),  /* BlueField-2 integrated ConnectX-6 Dx network controller */
+	HCA(MELLANOX, 0xa2dc),  /* BlueField-3 integrated ConnectX-7 network controller */
+	HCA(MELLANOX, 0xa2df),  /* BlueField-4 integrated ConnectX-8 network controller */
 	{}
 };
 
@@ -89,12 +95,12 @@ uint32_t mlx5_debug_mask = 0;
 int mlx5_freeze_on_error_cqe;
 
 static const struct verbs_context_ops mlx5_ctx_common_ops = {
-	.query_device  = mlx5_query_device,
 	.query_port    = mlx5_query_port,
 	.alloc_pd      = mlx5_alloc_pd,
 	.async_event   = mlx5_async_event,
 	.dealloc_pd    = mlx5_free_pd,
 	.reg_mr	       = mlx5_reg_mr,
+	.reg_dmabuf_mr = mlx5_reg_dmabuf_mr,
 	.rereg_mr      = mlx5_rereg_mr,
 	.dereg_mr      = mlx5_dereg_mr,
 	.alloc_mw      = mlx5_alloc_mw,
@@ -144,6 +150,7 @@ static const struct verbs_context_ops mlx5_ctx_common_ops = {
 	.destroy_wq = mlx5_destroy_wq,
 	.free_dm = mlx5_free_dm,
 	.get_srq_num = mlx5_get_srq_num,
+	.import_dm = mlx5_import_dm,
 	.import_mr = mlx5_import_mr,
 	.import_pd = mlx5_import_pd,
 	.modify_cq = mlx5_modify_cq,
@@ -161,8 +168,10 @@ static const struct verbs_context_ops mlx5_ctx_common_ops = {
 	.alloc_null_mr = mlx5_alloc_null_mr,
 	.free_context = mlx5_free_context,
 	.set_ece = mlx5_set_ece,
+	.unimport_dm = mlx5_unimport_dm,
 	.unimport_mr = mlx5_unimport_mr,
 	.unimport_pd = mlx5_unimport_pd,
+	.query_qp_data_in_order = mlx5_query_qp_data_in_order,
 };
 
 static const struct verbs_context_ops mlx5_ctx_cqev1_ops = {
@@ -215,6 +224,36 @@ static int32_t get_free_uidx(struct mlx5_context *ctx)
 	return (tind << MLX5_UIDX_TABLE_SHIFT) | i;
 }
 
+int mlx5_cmd_status_to_err(uint8_t status)
+{
+	switch (status) {
+	case MLX5_CMD_STAT_OK:				return 0;
+	case MLX5_CMD_STAT_INT_ERR:			return EIO;
+	case MLX5_CMD_STAT_BAD_OP_ERR:			return EINVAL;
+	case MLX5_CMD_STAT_BAD_PARAM_ERR:		return EINVAL;
+	case MLX5_CMD_STAT_BAD_SYS_STATE_ERR:		return EIO;
+	case MLX5_CMD_STAT_BAD_RES_ERR:			return EINVAL;
+	case MLX5_CMD_STAT_RES_BUSY:			return EBUSY;
+	case MLX5_CMD_STAT_LIM_ERR:			return ENOMEM;
+	case MLX5_CMD_STAT_BAD_RES_STATE_ERR:		return EINVAL;
+	case MLX5_CMD_STAT_IX_ERR:			return EINVAL;
+	case MLX5_CMD_STAT_NO_RES_ERR:			return EAGAIN;
+	case MLX5_CMD_STAT_BAD_INP_LEN_ERR:		return EIO;
+	case MLX5_CMD_STAT_BAD_OUTP_LEN_ERR:		return EIO;
+	case MLX5_CMD_STAT_BAD_QP_STATE_ERR:		return EINVAL;
+	case MLX5_CMD_STAT_BAD_PKT_ERR:			return EINVAL;
+	case MLX5_CMD_STAT_BAD_SIZE_OUTS_CQES_ERR:	return EINVAL;
+	default:					return EIO;
+	}
+}
+
+int mlx5_get_cmd_status_err(int err, void *out)
+{
+	if (err == EREMOTEIO)
+		err = mlx5_cmd_status_to_err(DEVX_GET(mbox_out, out, status));
+	return err;
+}
+
 int32_t mlx5_store_uidx(struct mlx5_context *ctx, void *rsc)
 {
 	int32_t tind;
@@ -256,6 +295,97 @@ void mlx5_clear_uidx(struct mlx5_context *ctx, uint32_t uidx)
 		ctx->uidx_table[tind].table[uidx & MLX5_UIDX_TABLE_MASK] = NULL;
 
 	pthread_mutex_unlock(&ctx->uidx_table_mutex);
+}
+
+struct mlx5_mkey *mlx5_find_mkey(struct mlx5_context *ctx, uint32_t mkey)
+{
+	int tind = mkey >> MLX5_MKEY_TABLE_SHIFT;
+
+	if (ctx->mkey_table[tind].refcnt)
+		return ctx->mkey_table[tind].table[mkey & MLX5_MKEY_TABLE_MASK];
+	else
+		return NULL;
+}
+
+int mlx5_store_mkey(struct mlx5_context *ctx, uint32_t mkey,
+		    struct mlx5_mkey *mlx5_mkey)
+{
+	int tind = mkey >> MLX5_MKEY_TABLE_SHIFT;
+	int ret = 0;
+
+	pthread_mutex_lock(&ctx->mkey_table_mutex);
+
+	if (!ctx->mkey_table[tind].refcnt) {
+		ctx->mkey_table[tind].table = calloc(MLX5_MKEY_TABLE_MASK + 1,
+				sizeof(struct mlx5_mkey *));
+		if (!ctx->mkey_table[tind].table) {
+			ret = -1;
+			goto out;
+		}
+	}
+
+	++ctx->mkey_table[tind].refcnt;
+	ctx->mkey_table[tind].table[mkey & MLX5_MKEY_TABLE_MASK] = mlx5_mkey;
+
+out:
+	pthread_mutex_unlock(&ctx->mkey_table_mutex);
+	return ret;
+}
+
+void mlx5_clear_mkey(struct mlx5_context *ctx, uint32_t mkey)
+{
+	int tind = mkey >> MLX5_MKEY_TABLE_SHIFT;
+
+	pthread_mutex_lock(&ctx->mkey_table_mutex);
+
+	if (!--ctx->mkey_table[tind].refcnt)
+		free(ctx->mkey_table[tind].table);
+	else
+		ctx->mkey_table[tind].table[mkey & MLX5_MKEY_TABLE_MASK] = NULL;
+
+	pthread_mutex_unlock(&ctx->mkey_table_mutex);
+}
+
+struct mlx5_psv *mlx5_create_psv(struct ibv_pd *pd)
+{
+	uint32_t out[DEVX_ST_SZ_DW(create_psv_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(create_psv_in)] = {};
+	struct mlx5_psv *psv;
+
+	psv = calloc(1, sizeof(*psv));
+	if (!psv) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	DEVX_SET(create_psv_in, in, opcode, MLX5_CMD_OP_CREATE_PSV);
+	DEVX_SET(create_psv_in, in, pd, to_mpd(pd)->pdn);
+	DEVX_SET(create_psv_in, in, num_psv, 1);
+
+	psv->devx_obj = mlx5dv_devx_obj_create(pd->context, in, sizeof(in),
+					       out, sizeof(out));
+	if (!psv->devx_obj) {
+		errno = mlx5_get_cmd_status_err(errno, out);
+		goto err_free_psv;
+	}
+
+	psv->index = DEVX_GET(create_psv_out, out, psv0_index);
+
+	return psv;
+err_free_psv:
+	free(psv);
+	return NULL;
+}
+
+int mlx5_destroy_psv(struct mlx5_psv *psv)
+{
+	int ret;
+
+	ret = mlx5dv_devx_obj_destroy(psv->devx_obj);
+	if (!ret)
+		free(psv);
+
+	return ret;
 }
 
 static int mlx5_is_sandy_bridge(int *num_cores)
@@ -324,7 +454,8 @@ man cpuset
   The first "1" is for bit 64, the second for bit 32, the third for bit 16, the fourth for bit 8, the fifth for
   bit 4, and the "7" is for bits 2, 1, and 0.
 */
-static void mlx5_local_cpu_set(struct ibv_device *ibdev, cpu_set_t *cpu_set)
+static void mlx5_local_cpu_set(struct ibv_device *ibdev, struct mlx5_context *mctx,
+			       cpu_set_t *cpu_set)
 {
 	char *p, buf[1024] = {};
 	char *env_value;
@@ -343,11 +474,11 @@ static void mlx5_local_cpu_set(struct ibv_device *ibdev, cpu_set_t *cpu_set)
 
 		fp = fopen(fname, "r");
 		if (!fp) {
-			fprintf(stderr, PFX "Warning: can not get local cpu set: failed to open %s\n", fname);
+			mlx5_err(mctx->dbg_fp, PFX "Warning: can not get local cpu set: failed to open %s\n", fname);
 			return;
 		}
 		if (!fgets(buf, sizeof(buf), fp)) {
-			fprintf(stderr, PFX "Warning: can not get local cpu set: failed to read cpu mask\n");
+			mlx5_err(mctx->dbg_fp, PFX "Warning: can not get local cpu set: failed to read cpu mask\n");
 			fclose(fp);
 			return;
 		}
@@ -382,7 +513,7 @@ static void mlx5_local_cpu_set(struct ibv_device *ibdev, cpu_set_t *cpu_set)
 	} while (i < CPU_SETSIZE);
 }
 
-static int mlx5_enable_sandy_bridge_fix(struct ibv_device *ibdev)
+static int mlx5_enable_sandy_bridge_fix(struct ibv_device *ibdev, struct mlx5_context *mctx)
 {
 	cpu_set_t my_cpus, dev_local_cpus, result_set;
 	int stall_enable;
@@ -407,14 +538,14 @@ static int mlx5_enable_sandy_bridge_fix(struct ibv_device *ibdev)
 	ret = sched_getaffinity(0, sizeof(my_cpus), &my_cpus);
 	if (ret == -1) {
 		if (errno == EINVAL)
-			fprintf(stderr, PFX "Warning: my cpu set is too small\n");
+			mlx5_err(mctx->dbg_fp, PFX "Warning: my cpu set is too small\n");
 		else
-			fprintf(stderr, PFX "Warning: failed to get my cpu set\n");
+			mlx5_err(mctx->dbg_fp, PFX "Warning: failed to get my cpu set\n");
 		goto out;
 	}
 
 	/* get device local cpu set */
-	mlx5_local_cpu_set(ibdev, &dev_local_cpus);
+	mlx5_local_cpu_set(ibdev, mctx, &dev_local_cpus);
 
 	/* check if my cpu set is in dev cpu */
 	CPU_OR(&result_set, &my_cpus, &dev_local_cpus);
@@ -434,7 +565,7 @@ static void mlx5_read_env(struct ibv_device *ibdev, struct mlx5_context *ctx)
 		ctx->stall_enable = (strcmp(env_value, "0")) ? 1 : 0;
 	else
 		/* autodetect if we need to do cq polling */
-		ctx->stall_enable = mlx5_enable_sandy_bridge_fix(ibdev);
+		ctx->stall_enable = mlx5_enable_sandy_bridge_fix(ibdev, ctx);
 
 	env_value = getenv("MLX5_STALL_NUM_LOOP");
 	if (env_value)
@@ -488,31 +619,36 @@ static int get_total_uuars(int page_size)
 	return size;
 }
 
-static void open_debug_file(struct mlx5_context *ctx)
+void mlx5_open_debug_file(FILE **dbg_fp)
 {
 	char *env;
+	FILE *default_dbg_fp = NULL;
+
+#ifdef MLX5_DEBUG
+	default_dbg_fp = stderr;
+#endif
 
 	env = getenv("MLX5_DEBUG_FILE");
 	if (!env) {
-		ctx->dbg_fp = stderr;
+		*dbg_fp = default_dbg_fp;
 		return;
 	}
 
-	ctx->dbg_fp = fopen(env, "aw+");
-	if (!ctx->dbg_fp) {
-		fprintf(stderr, "Failed opening debug file %s, using stderr\n", env);
-		ctx->dbg_fp = stderr;
+	*dbg_fp = fopen(env, "aw+");
+	if (!*dbg_fp) {
+		*dbg_fp = default_dbg_fp;
+		mlx5_err(*dbg_fp, "Failed opening debug file %s\n", env);
 		return;
 	}
 }
 
-static void close_debug_file(struct mlx5_context *ctx)
+void mlx5_close_debug_file(FILE *dbg_fp)
 {
-	if (ctx->dbg_fp && ctx->dbg_fp != stderr)
-		fclose(ctx->dbg_fp);
+	if (dbg_fp && dbg_fp != stderr)
+		fclose(dbg_fp);
 }
 
-static void set_debug_mask(void)
+void mlx5_set_debug_mask(void)
 {
 	char *env;
 
@@ -655,9 +791,9 @@ static int mlx5_map_internal_clock(struct mlx5_device *mdev,
 			      mdev->page_size * offset);
 
 	if (hca_clock_page == MAP_FAILED) {
-		fprintf(stderr, PFX
-			"Warning: Timestamp available,\n"
-			"but failed to mmap() hca core clock page.\n");
+		mlx5_err(context->dbg_fp, PFX
+			 "Warning: Timestamp available,\n"
+			 "but failed to mmap() hca core clock page.\n");
 		return -1;
 	}
 
@@ -719,14 +855,11 @@ static uint32_t get_dc_odp_caps(struct ibv_context *ctx)
 	return ret;
 }
 
-int mlx5dv_query_device(struct ibv_context *ctx_in,
-			 struct mlx5dv_context *attrs_out)
+static int _mlx5dv_query_device(struct ibv_context *ctx_in,
+				struct mlx5dv_context *attrs_out)
 {
 	struct mlx5_context *mctx = to_mctx(ctx_in);
 	uint64_t comp_mask_out = 0;
-
-	if (!is_mlx5_dev(ctx_in->device))
-		return EOPNOTSUPP;
 
 	attrs_out->version   = 0;
 	attrs_out->flags     = 0;
@@ -742,6 +875,9 @@ int mlx5dv_query_device(struct ibv_context *ctx_in,
 
 	if (mctx->vendor_cap_flags & MLX5_VENDOR_CAP_FLAGS_CQE_128B_PAD)
 		attrs_out->flags |= MLX5DV_CONTEXT_FLAGS_CQE_128B_PAD;
+
+	if (mctx->flags & MLX5_CTX_FLAGS_REAL_TIME_TS_SUPPORTED)
+		attrs_out->flags |= MLX5DV_CONTEXT_FLAGS_REAL_TIME_TS;
 
 	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_CQE_COMPRESION) {
 		attrs_out->cqe_comp_caps = mctx->cqe_comp_caps;
@@ -768,6 +904,11 @@ int mlx5dv_query_device(struct ibv_context *ctx_in,
 	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS) {
 		attrs_out->tunnel_offloads_caps = mctx->tunnel_offloads_caps;
 		comp_mask_out |= MLX5DV_CONTEXT_MASK_TUNNEL_OFFLOADS;
+	}
+
+	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_DCI_STREAMS) {
+		attrs_out->dci_streams_caps = mctx->dci_streams_caps;
+		comp_mask_out |= MLX5DV_CONTEXT_MASK_DCI_STREAMS;
 	}
 
 	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_DYN_BFREGS) {
@@ -801,10 +942,27 @@ int mlx5dv_query_device(struct ibv_context *ctx_in,
 	}
 
 	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_NUM_LAG_PORTS) {
-		if (mctx->lag_caps.num_lag_ports) {
-			attrs_out->num_lag_ports = mctx->lag_caps.num_lag_ports;
+		if (mctx->entropy_caps.num_lag_ports) {
+			attrs_out->num_lag_ports =
+				mctx->entropy_caps.num_lag_ports;
 			comp_mask_out |= MLX5DV_CONTEXT_MASK_NUM_LAG_PORTS;
 		}
+	}
+
+	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_SIGNATURE_OFFLOAD) {
+		attrs_out->sig_caps = mctx->sig_caps;
+		comp_mask_out |= MLX5DV_CONTEXT_MASK_SIGNATURE_OFFLOAD;
+	}
+
+	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_WR_MEMCPY_LENGTH) {
+		attrs_out->max_wr_memcpy_length =
+			mctx->dma_mmo_caps.dma_max_size;
+		comp_mask_out |= MLX5DV_CONTEXT_MASK_WR_MEMCPY_LENGTH;
+	}
+
+	if (attrs_out->comp_mask & MLX5DV_CONTEXT_MASK_CRYPTO_OFFLOAD) {
+		attrs_out->crypto_caps = mctx->crypto_caps;
+		comp_mask_out |= MLX5DV_CONTEXT_MASK_CRYPTO_OFFLOAD;
 	}
 
 	attrs_out->comp_mask = comp_mask_out;
@@ -812,14 +970,22 @@ int mlx5dv_query_device(struct ibv_context *ctx_in,
 	return 0;
 }
 
+int mlx5dv_query_device(struct ibv_context *ctx_in,
+			struct mlx5dv_context *attrs_out)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx_in);
+
+	if (!dvops || !dvops->query_device)
+		return EOPNOTSUPP;
+
+	return dvops->query_device(ctx_in, attrs_out);
+}
+
 static int mlx5dv_get_qp(struct ibv_qp *qp_in,
 			 struct mlx5dv_qp *qp_out)
 {
 	struct mlx5_qp *mqp = to_mqp(qp_in);
 	uint64_t mask_out = 0;
-
-	if (!is_mlx5_dev(qp_in->context->device))
-		return EOPNOTSUPP;
 
 	qp_out->dbrec     = mqp->db;
 
@@ -871,9 +1037,6 @@ static int mlx5dv_get_cq(struct ibv_cq *cq_in,
 	struct mlx5_cq *mcq = to_mcq(cq_in);
 	struct mlx5_context *mctx = to_mctx(cq_in->context);
 
-	if (!is_mlx5_dev(cq_in->context->device))
-		return EOPNOTSUPP;
-
 	cq_out->comp_mask = 0;
 	cq_out->cqn       = mcq->cqn;
 	cq_out->cqe_cnt   = mcq->verbs_cq.cq.cqe + 1;
@@ -892,9 +1055,6 @@ static int mlx5dv_get_rwq(struct ibv_wq *wq_in,
 {
 	struct mlx5_rwq *mrwq = to_mrwq(wq_in);
 
-	if (!is_mlx5_dev(wq_in->context->device))
-		return EOPNOTSUPP;
-
 	rwq_out->comp_mask = 0;
 	rwq_out->buf       = mrwq->pbuff;
 	rwq_out->dbrec     = mrwq->recv_db;
@@ -909,9 +1069,6 @@ static int mlx5dv_get_srq(struct ibv_srq *srq_in,
 {
 	struct mlx5_srq *msrq;
 	uint64_t mask_out = 0;
-
-	if (!is_mlx5_dev(srq_in->context->device))
-		return EOPNOTSUPP;
 
 	msrq = container_of(srq_in, struct mlx5_srq, vsrq.srq);
 
@@ -936,9 +1093,6 @@ static int mlx5dv_get_dm(struct ibv_dm *dm_in,
 	struct mlx5_dm *mdm = to_mdm(dm_in);
 	uint64_t mask_out = 0;
 
-	if (!is_mlx5_dev(dm_in->context->device))
-		return EOPNOTSUPP;
-
 	dm_out->buf       = mdm->start_va;
 	dm_out->length    = mdm->length;
 
@@ -957,9 +1111,6 @@ static int mlx5dv_get_av(struct ibv_ah *ah_in,
 {
 	struct mlx5_ah *mah = to_mah(ah_in);
 
-	if (!is_mlx5_dev(ah_in->context->device))
-		return EOPNOTSUPP;
-
 	ah_out->comp_mask = 0;
 	ah_out->av	  = &mah->av;
 
@@ -970,9 +1121,6 @@ static int mlx5dv_get_pd(struct ibv_pd *pd_in,
 			 struct mlx5dv_pd *pd_out)
 {
 	struct mlx5_pd *mpd = to_mpd(pd_in);
-
-	if (!is_mlx5_dev(pd_in->context->device))
-		return EOPNOTSUPP;
 
 	pd_out->comp_mask = 0;
 	pd_out->pdn = mpd->pdn;
@@ -992,7 +1140,7 @@ static int query_lag(struct ibv_context *ctx, uint8_t *lag_state,
 	ret = mlx5dv_devx_general_cmd(ctx, in_lag, sizeof(in_lag), out_lag,
 				      sizeof(out_lag));
 	if (ret)
-		return ret;
+		return mlx5_get_cmd_status_err(ret, out_lag);
 
 	*lag_state = DEVX_GET(query_lag_out, out_lag, ctx.lag_state);
 	if (tx_remap_affinity_1)
@@ -1010,8 +1158,7 @@ static bool lag_operation_supported(struct ibv_qp *qp)
 	struct mlx5_context *mctx = to_mctx(qp->context);
 	struct mlx5_qp *mqp = to_mqp(qp);
 
-	if (!is_mlx5_dev(qp->context->device) ||
-	    (mctx->lag_caps.num_lag_ports <= 1))
+	if (mctx->entropy_caps.num_lag_ports <= 1)
 		return false;
 
 	if ((qp->qp_type == IBV_QPT_RC) ||
@@ -1027,10 +1174,10 @@ static bool lag_operation_supported(struct ibv_qp *qp)
 }
 
 
-int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
-			     uint8_t *active_port_num)
+static int _mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
+				     uint8_t *active_port_num)
 {
-	uint8_t lag_state, tx_remap_affinity_1, tx_remap_affinity_2;
+	uint8_t lag_state = 0, tx_remap_affinity_1 = 0, tx_remap_affinity_2 = 0;
 	uint32_t in_tis[DEVX_ST_SZ_DW(query_tis_in)] = {};
 	uint32_t out_tis[DEVX_ST_SZ_DW(query_tis_out)] = {};
 	uint32_t in_qp[DEVX_ST_SZ_DW(query_qp_in)] = {};
@@ -1047,7 +1194,7 @@ int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
 	if (ret)
 		return ret;
 
-	if (!lag_state && !mctx->lag_caps.lag_tx_port_affinity)
+	if (!lag_state && !mctx->entropy_caps.lag_tx_port_affinity)
 		return EOPNOTSUPP;
 
 	switch (qp->qp_type) {
@@ -1057,7 +1204,7 @@ int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
 		ret = mlx5dv_devx_qp_query(qp, in_tis, sizeof(in_tis), out_tis,
 					   sizeof(out_tis));
 		if (ret)
-			return ret;
+			return mlx5_get_cmd_status_err(ret, out_tis);
 
 		*port_num = DEVX_GET(query_tis_out, out_tis,
 				     tis_context.lag_tx_port_affinity);
@@ -1069,7 +1216,7 @@ int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
 		ret = mlx5dv_devx_qp_query(qp, in_qp, sizeof(in_qp), out_qp,
 					   sizeof(out_qp));
 		if (ret)
-			return ret;
+			return mlx5_get_cmd_status_err(ret, out_qp);
 
 		*port_num = DEVX_GET(query_qp_out, out_qp,
 				     qpc.lag_tx_port_affinity);
@@ -1092,10 +1239,55 @@ int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
 	return 0;
 }
 
-int mlx5dv_modify_qp_lag_port(struct ibv_qp *qp, uint8_t port_num)
+int mlx5dv_query_qp_lag_port(struct ibv_qp *qp, uint8_t *port_num,
+			     uint8_t *active_port_num)
 {
-	uint32_t in[DEVX_ST_SZ_DW(modify_tis_in)] = {};
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(qp->context);
+
+	if (!dvops || !dvops->query_qp_lag_port)
+		return EOPNOTSUPP;
+
+	return dvops->query_qp_lag_port(qp, port_num,
+					active_port_num);
+}
+
+static int modify_tis_lag_port(struct ibv_qp *qp, uint8_t port_num)
+{
 	uint32_t out[DEVX_ST_SZ_DW(modify_tis_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(modify_tis_in)] = {};
+	struct mlx5_qp *mqp = to_mqp(qp);
+	int ret;
+
+	DEVX_SET(modify_tis_in, in, opcode, MLX5_CMD_OP_MODIFY_TIS);
+	DEVX_SET(modify_tis_in, in, tisn, mqp->tisn);
+	DEVX_SET(modify_tis_in, in, bitmask.lag_tx_port_affinity, 1);
+	DEVX_SET(modify_tis_in, in, ctx.lag_tx_port_affinity, port_num);
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static int modify_qp_lag_port(struct ibv_qp *qp, uint8_t port_num)
+{
+	uint32_t out[DEVX_ST_SZ_DW(rts2rts_qp_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(rts2rts_qp_in)] = {};
+	struct mlx5_context *mctx = to_mctx(qp->context);
+	int ret;
+
+	if (!mctx->entropy_caps.rts2rts_lag_tx_port_affinity ||
+	    qp->state != IBV_QPS_RTS)
+		return EOPNOTSUPP;
+
+	DEVX_SET(rts2rts_qp_in, in, opcode, MLX5_CMD_OP_RTS2RTS_QP);
+	DEVX_SET(rts2rts_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET(rts2rts_qp_in, in, opt_param_mask,
+		 MLX5_QPC_OPT_MASK_RTS2RTS_LAG_TX_PORT_AFFINITY);
+	DEVX_SET(rts2rts_qp_in, in, qpc.lag_tx_port_affinity, port_num);
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static int _mlx5dv_modify_qp_lag_port(struct ibv_qp *qp, uint8_t port_num)
+{
 	uint8_t curr_configured, curr_active;
 	struct mlx5_qp *mqp = to_mqp(qp);
 	int ret;
@@ -1109,25 +1301,750 @@ int mlx5dv_modify_qp_lag_port(struct ibv_qp *qp, uint8_t port_num)
 
 	switch (qp->qp_type) {
 	case IBV_QPT_RAW_PACKET:
-		DEVX_SET(modify_tis_in, in, opcode, MLX5_CMD_OP_MODIFY_TIS);
-		DEVX_SET(modify_tis_in, in, tisn, mqp->tisn);
-		DEVX_SET(modify_tis_in, in, bitmask.lag_tx_port_affinity, 1);
-		DEVX_SET(modify_tis_in, in, ctx.lag_tx_port_affinity, port_num);
-		ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out,
-					    sizeof(out));
+		return modify_tis_lag_port(qp, port_num);
+
+	case IBV_QPT_DRIVER:
+		if (mqp->dc_type != MLX5DV_DCTYPE_DCI)
+			return EOPNOTSUPP;
+		SWITCH_FALLTHROUGH;
+	case IBV_QPT_RC:
+	case IBV_QPT_UD:
+	case IBV_QPT_UC:
+		return modify_qp_lag_port(qp, port_num);
+
+	default:
+		return EOPNOTSUPP;
+	}
+}
+
+int mlx5dv_modify_qp_lag_port(struct ibv_qp *qp, uint8_t port_num)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(qp->context);
+
+	if (!dvops || !dvops->modify_qp_lag_port)
+		return EOPNOTSUPP;
+
+	return dvops->modify_qp_lag_port(qp, port_num);
+
+}
+
+static int _mlx5dv_modify_qp_udp_sport(struct ibv_qp *qp, uint16_t udp_sport)
+{
+	uint32_t in[DEVX_ST_SZ_DW(rts2rts_qp_in)] = {};
+	uint32_t out[DEVX_ST_SZ_DW(rts2rts_qp_out)] = {};
+	struct mlx5_context *mctx = to_mctx(qp->context);
+	int ret;
+
+	switch (qp->qp_type) {
+	case IBV_QPT_RC:
+	case IBV_QPT_UC:
+		if (qp->state != IBV_QPS_RTS ||
+		    !mctx->entropy_caps.rts2rts_qp_udp_sport)
+			return EOPNOTSUPP;
+		break;
+	default:
+		return EOPNOTSUPP;
+	}
+	DEVX_SET(rts2rts_qp_in, in, opcode, MLX5_CMD_OP_RTS2RTS_QP);
+	DEVX_SET(rts2rts_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET64(rts2rts_qp_in, in, opt_param_mask_95_32,
+		   MLX5_QPC_OPT_MASK_32_UDP_SPORT);
+	DEVX_SET(rts2rts_qp_in, in, qpc.primary_address_path.udp_sport,
+		 udp_sport);
+
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+int mlx5dv_modify_qp_udp_sport(struct ibv_qp *qp, uint16_t udp_sport)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(qp->context);
+
+	if (!dvops || !dvops->modify_qp_udp_sport)
+		return EOPNOTSUPP;
+
+	return dvops->modify_qp_udp_sport(qp, udp_sport);
+}
+
+int mlx5dv_dci_stream_id_reset(struct ibv_qp *qp, uint16_t stream_id)
+{
+	uint32_t out[DEVX_ST_SZ_DW(rts2rts_qp_out)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(rts2rts_qp_in)] = {};
+	struct mlx5_context *mctx = to_mctx(qp->context);
+	struct mlx5_qp *mqp = to_mqp(qp);
+	void *qpce = DEVX_ADDR_OF(rts2rts_qp_in, in, qpc_data_ext);
+	int ret;
+
+	if (!is_mlx5_dev(qp->context->device) ||
+	    !mctx->dci_streams_caps.max_log_num_errored ||
+	    !mctx->qpc_extension_cap ||
+	    qp->state != IBV_QPS_RTS)
+		return EOPNOTSUPP;
+
+	if ((mqp->dc_type != MLX5DV_DCTYPE_DCI) || (qp->qp_type != IBV_QPT_DRIVER))
+		return EINVAL;
+
+	DEVX_SET(rts2rts_qp_in, in, opcode, MLX5_CMD_OP_RTS2RTS_QP);
+	DEVX_SET(rts2rts_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET(rts2rts_qp_in, in, qpc_ext, 1);
+	DEVX_SET64(rts2rts_qp_in, in, opt_param_mask_95_32,
+		   MLX5_QPC_OPT_MASK_32_DCI_STREAM_CHANNEL_ID);
+
+	DEVX_SET(qpc_ext, qpce, dci_stream_channel_id, stream_id);
+
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static bool sched_supported(struct ibv_context *ctx)
+{
+	struct mlx5_qos_caps *qc = &to_mctx(ctx)->qos_caps;
+
+	return (qc->qos &&
+		(qc->nic_element_type & ELEMENT_TYPE_CAP_MASK_TASR) &&
+		(qc->nic_element_type & ELEMENT_TYPE_CAP_MASK_QUEUE_GROUP) &&
+		(qc->nic_tsar_type & TSAR_TYPE_CAP_MASK_DWRR));
+}
+
+static struct mlx5dv_devx_obj *
+mlx5dv_sched_nic_create(struct ibv_context *ctx,
+			const struct mlx5dv_sched_attr *sched_attr,
+			int elem_type)
+{
+	uint32_t out[DEVX_ST_SZ_DW(general_obj_out_cmd_hdr)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(create_sched_elem_in)] = {};
+	struct mlx5dv_devx_obj *obj;
+	uint32_t parent_id;
+	void *attr;
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, hdr);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, opcode, MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, obj_type, MLX5_OBJ_TYPE_SCHEDULING_ELEMENT);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, sched_elem);
+	DEVX_SET64(sched_elem, attr, modify_field_select, sched_attr->flags);
+	DEVX_SET(sched_elem, attr,
+		 scheduling_hierarchy, MLX5_SCHED_HIERARCHY_NIC);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, sched_elem.sched_context);
+	DEVX_SET(sched_context, attr, element_type, elem_type);
+
+	parent_id = sched_attr->parent ? sched_attr->parent->obj->object_id : 0;
+	DEVX_SET(sched_context, attr, parent_element_id, parent_id);
+	if (sched_attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_BW_SHARE)
+		DEVX_SET(sched_context, attr, bw_share, sched_attr->bw_share);
+	if (sched_attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_MAX_AVG_BW)
+		DEVX_SET(sched_context, attr,
+			 max_average_bw, sched_attr->max_avg_bw);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in,
+			    sched_elem.sched_context.sched_elem_attr);
+	DEVX_SET(sched_elem_attr_tsar, attr, tsar_type,
+		 MLX5_SCHED_TSAR_TYPE_DWRR);
+
+	obj = mlx5dv_devx_obj_create(ctx, in, sizeof(in), out, sizeof(out));
+	if (!obj)
+		errno = mlx5_get_cmd_status_err(errno, out);
+	return obj;
+}
+
+static int
+mlx5dv_sched_nic_modify(struct mlx5dv_devx_obj *obj,
+			const struct mlx5dv_sched_attr *sched_attr,
+			int elem_type)
+{
+	uint32_t out[DEVX_ST_SZ_DW(general_obj_out_cmd_hdr)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(create_sched_elem_in)] = {};
+	void *attr;
+	int ret;
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, hdr);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, opcode, MLX5_CMD_OP_MODIFY_GENERAL_OBJECT);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, obj_type, MLX5_OBJ_TYPE_SCHEDULING_ELEMENT);
+	DEVX_SET(general_obj_in_cmd_hdr, in, obj_id, obj->object_id);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, sched_elem);
+	DEVX_SET64(sched_elem, attr, modify_field_select, sched_attr->flags);
+	DEVX_SET(sched_elem, attr,
+		 scheduling_hierarchy, MLX5_SCHED_HIERARCHY_NIC);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in, sched_elem.sched_context);
+	DEVX_SET(sched_context, attr, element_type, elem_type);
+	if (sched_attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_BW_SHARE)
+		DEVX_SET(sched_context, attr, bw_share, sched_attr->bw_share);
+	if (sched_attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_MAX_AVG_BW)
+		DEVX_SET(sched_context, attr,
+			 max_average_bw, sched_attr->max_avg_bw);
+
+	attr = DEVX_ADDR_OF(create_sched_elem_in, in,
+			    sched_elem.sched_context.sched_elem_attr);
+	DEVX_SET(sched_elem_attr_tsar, attr, tsar_type,
+		 MLX5_SCHED_TSAR_TYPE_DWRR);
+
+	ret = mlx5dv_devx_obj_modify(obj, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+#define MLX5DV_SCHED_ELEM_ATTR_ALL_FLAGS \
+	(MLX5DV_SCHED_ELEM_ATTR_FLAGS_BW_SHARE |	\
+	 MLX5DV_SCHED_ELEM_ATTR_FLAGS_MAX_AVG_BW)
+
+static bool attr_supported(struct ibv_context *ctx,
+			   const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5_qos_caps *qc = &to_mctx(ctx)->qos_caps;
+
+	if ((attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_BW_SHARE) &&
+	    !qc->nic_bw_share)
+		return false;
+	if ((attr->flags & MLX5DV_SCHED_ELEM_ATTR_FLAGS_MAX_AVG_BW) &&
+	    !qc->nic_rate_limit)
+		return false;
+
+	return true;
+}
+
+static bool sched_attr_valid(const struct mlx5dv_sched_attr *attr, bool node)
+{
+	if (!attr || attr->comp_mask ||
+	    !check_comp_mask(attr->flags, MLX5DV_SCHED_ELEM_ATTR_ALL_FLAGS))
+		return false;
+	if (node && (!attr->parent && attr->flags))
+		return false;
+	if (!node && !attr->parent)
+		return false;
+
+	return true;
+}
+
+static struct mlx5dv_sched_node *
+_mlx5dv_sched_node_create(struct ibv_context *ctx,
+			   const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5dv_sched_node *node;
+	struct mlx5dv_devx_obj *obj;
+
+	if (!sched_attr_valid(attr, true)) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	if (!sched_supported(ctx) || !attr_supported(ctx, attr)) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+
+	node = calloc(1, sizeof(*node));
+	if (!node) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	obj = mlx5dv_sched_nic_create(ctx, attr, MLX5_SCHED_ELEM_TYPE_TSAR);
+	if (!obj)
+		goto err_sched_nic_create;
+
+	node->obj = obj;
+	node->parent = attr->parent;
+	return node;
+
+err_sched_nic_create:
+	free(node);
+	return NULL;
+}
+
+struct mlx5dv_sched_node *
+mlx5dv_sched_node_create(struct ibv_context *ctx,
+			 const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx);
+
+	if (!dvops || !dvops->sched_node_create) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+
+	return dvops->sched_node_create(ctx, attr);
+}
+
+static struct mlx5dv_sched_leaf *
+_mlx5dv_sched_leaf_create(struct ibv_context *ctx,
+			   const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5dv_sched_leaf *leaf;
+	struct mlx5dv_devx_obj *obj;
+
+	if (!sched_attr_valid(attr, false)) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	if (!attr_supported(ctx, attr)) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+
+	leaf = calloc(1, sizeof(*leaf));
+	if (!leaf) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	obj = mlx5dv_sched_nic_create(ctx, attr,
+				      MLX5_SCHED_ELEM_TYPE_QUEUE_GROUP);
+	if (!obj)
+		goto err_sched_nic_create;
+
+	leaf->obj = obj;
+	leaf->parent = attr->parent;
+	return leaf;
+
+err_sched_nic_create:
+	free(leaf);
+	return NULL;
+}
+
+struct mlx5dv_sched_leaf *
+mlx5dv_sched_leaf_create(struct ibv_context *ctx,
+			 const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx);
+
+	if (!dvops || !dvops->sched_leaf_create) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+
+	return dvops->sched_leaf_create(ctx, attr);
+}
+
+static int _mlx5dv_sched_node_modify(struct mlx5dv_sched_node *node,
+				     const struct mlx5dv_sched_attr *attr)
+{
+	if (!node || !sched_attr_valid(attr, true)) {
+		errno = EINVAL;
+		return errno;
+	}
+
+	if (!attr_supported(node->obj->context, attr)) {
+		errno = EOPNOTSUPP;
+		return errno;
+	}
+
+	return mlx5dv_sched_nic_modify(node->obj, attr,
+				       MLX5_SCHED_ELEM_TYPE_TSAR);
+}
+
+int mlx5dv_sched_node_modify(struct mlx5dv_sched_node *node,
+			     const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(node->obj->context);
+
+	if (!dvops || !dvops->sched_node_modify)
+		return EOPNOTSUPP;
+
+	return dvops->sched_node_modify(node, attr);
+}
+
+static int _mlx5dv_sched_leaf_modify(struct mlx5dv_sched_leaf *leaf,
+				     const struct mlx5dv_sched_attr *attr)
+{
+	if (!leaf || !sched_attr_valid(attr, false)) {
+		errno = EINVAL;
+		return errno;
+	}
+
+	if (!attr_supported(leaf->obj->context, attr)) {
+		errno = EOPNOTSUPP;
+		return errno;
+	}
+
+	return mlx5dv_sched_nic_modify(leaf->obj, attr,
+				       MLX5_SCHED_ELEM_TYPE_QUEUE_GROUP);
+}
+
+int mlx5dv_sched_leaf_modify(struct mlx5dv_sched_leaf *leaf,
+			     const struct mlx5dv_sched_attr *attr)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(leaf->obj->context);
+
+	if (!dvops || !dvops->sched_leaf_modify)
+		return EOPNOTSUPP;
+
+	return dvops->sched_leaf_modify(leaf, attr);
+}
+
+static int _mlx5dv_sched_node_destroy(struct mlx5dv_sched_node *node)
+{
+	int ret;
+
+	ret = mlx5dv_devx_obj_destroy(node->obj);
+	if (ret)
+		return ret;
+
+	free(node);
+	return 0;
+}
+
+int mlx5dv_sched_node_destroy(struct mlx5dv_sched_node *node)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(node->obj->context);
+
+	if (!dvops || !dvops->sched_node_destroy)
+		return EOPNOTSUPP;
+
+	return dvops->sched_node_destroy(node);
+}
+
+static int _mlx5dv_sched_leaf_destroy(struct mlx5dv_sched_leaf *leaf)
+{
+	int ret;
+
+	ret = mlx5dv_devx_obj_destroy(leaf->obj);
+	if (ret)
+		return ret;
+
+	free(leaf);
+	return 0;
+}
+
+int mlx5dv_sched_leaf_destroy(struct mlx5dv_sched_leaf *leaf)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(leaf->obj->context);
+
+	if (!dvops || !dvops->sched_leaf_destroy)
+		return EOPNOTSUPP;
+
+	return dvops->sched_leaf_destroy(leaf);
+}
+
+static int modify_ib_qp_sched_elem_init(struct ibv_qp *qp,
+					uint32_t req_id, uint32_t resp_id)
+{
+	uint64_t mask = MLX5_QPC_OPT_MASK_32_QOS_QUEUE_GROUP_ID;
+	uint32_t in[DEVX_ST_SZ_DW(init2init_qp_in)] = {};
+	uint32_t out[DEVX_ST_SZ_DW(init2init_qp_out)] = {};
+	void *qpce = DEVX_ADDR_OF(init2init_qp_in, in, qpc_data_ext);
+	int ret;
+
+	DEVX_SET(init2init_qp_in, in, opcode, MLX5_CMD_OP_INIT2INIT_QP);
+	DEVX_SET(init2init_qp_in, in, qpc_ext, 1);
+	DEVX_SET(init2init_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET64(init2init_qp_in, in, opt_param_mask_95_32, mask);
+
+	DEVX_SET(qpc_ext, qpce, qos_queue_group_id_requester, req_id);
+	DEVX_SET(qpc_ext, qpce, qos_queue_group_id_responder, resp_id);
+
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static int modify_ib_qp_sched_elem_rts(struct ibv_qp *qp,
+				       uint32_t req_id, uint32_t resp_id)
+{
+	uint64_t mask = MLX5_QPC_OPT_MASK_32_QOS_QUEUE_GROUP_ID;
+	uint32_t in[DEVX_ST_SZ_DW(rts2rts_qp_in)] = {};
+	uint32_t out[DEVX_ST_SZ_DW(rts2rts_qp_out)] = {};
+	void *qpce = DEVX_ADDR_OF(rts2rts_qp_in, in, qpc_data_ext);
+	int ret;
+
+	DEVX_SET(rts2rts_qp_in, in, opcode, MLX5_CMD_OP_RTS2RTS_QP);
+	DEVX_SET(rts2rts_qp_in, in, qpc_ext, 1);
+	DEVX_SET(rts2rts_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET64(rts2rts_qp_in, in, opt_param_mask_95_32, mask);
+
+	DEVX_SET(qpc_ext, qpce, qos_queue_group_id_requester, req_id);
+	DEVX_SET(qpc_ext, qpce, qos_queue_group_id_responder, resp_id);
+
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static int modify_ib_qp_sched_elem(struct ibv_qp *qp,
+				   uint32_t req_id, uint32_t resp_id)
+{
+	int ret;
+
+	switch (qp->state) {
+	case IBV_QPS_INIT:
+		ret = modify_ib_qp_sched_elem_init(qp, req_id, resp_id);
+		break;
+
+	case IBV_QPS_RTS:
+		ret = modify_ib_qp_sched_elem_rts(qp, req_id, resp_id);
 		break;
 
 	default:
-		ret = EOPNOTSUPP;
-		break;
-	}
+		return EOPNOTSUPP;
+	};
 
 	return ret;
 }
 
-LATEST_SYMVER_FUNC(mlx5dv_init_obj, 1_2, "MLX5_1.2",
-		   int,
-		   struct mlx5dv_obj *obj, uint64_t obj_type)
+static int modify_raw_qp_sched_elem(struct ibv_qp *qp, uint32_t qos_id)
+{
+	struct mlx5_qos_caps *qc = &to_mctx(qp->context)->qos_caps;
+	uint32_t mout[DEVX_ST_SZ_DW(modify_sq_out)] = {};
+	uint32_t min[DEVX_ST_SZ_DW(modify_sq_in)] = {};
+	struct mlx5_qp *mqp = to_mqp(qp);
+	void *sqc;
+	int ret;
+
+	if (qp->state != IBV_QPS_RTS || !qc->nic_sq_scheduling)
+		return EOPNOTSUPP;
+
+	DEVX_SET(modify_sq_in, min, opcode, MLX5_CMD_OP_MODIFY_SQ);
+	DEVX_SET(modify_sq_in, min, sq_state, MLX5_SQC_STATE_RDY);
+	DEVX_SET(modify_sq_in, min, sqn, mqp->sqn);
+	DEVX_SET64(modify_sq_in, min, modify_bitmask,
+		   MLX5_MODIFY_SQ_BITMASK_QOS_QUEUE_GROUP_ID);
+	sqc = DEVX_ADDR_OF(modify_sq_in, min, sq_context);
+	DEVX_SET(sqc, sqc, state, MLX5_SQC_STATE_RDY);
+	DEVX_SET(sqc, sqc, qos_queue_group_id, qos_id);
+
+	ret = mlx5dv_devx_qp_modify(qp, min, sizeof(min), mout, sizeof(mout));
+	return ret ? mlx5_get_cmd_status_err(ret, mout) : 0;
+}
+
+static int _mlx5dv_modify_qp_sched_elem(struct ibv_qp *qp,
+					const struct mlx5dv_sched_leaf *requestor,
+					const struct mlx5dv_sched_leaf *responder)
+{
+	struct mlx5_qos_caps *qc = &to_mctx(qp->context)->qos_caps;
+
+	switch (qp->qp_type) {
+	case IBV_QPT_UC:
+	case IBV_QPT_UD:
+		if (responder)
+			return EINVAL;
+		SWITCH_FALLTHROUGH;
+	case IBV_QPT_RC:
+		if ((!to_mctx(qp->context)->qpc_extension_cap) ||
+		    !(qc->nic_qp_scheduling))
+			return EOPNOTSUPP;
+		return modify_ib_qp_sched_elem(qp,
+					       requestor ? requestor->obj->object_id : 0,
+					       responder ? responder->obj->object_id : 0);
+	case IBV_QPT_RAW_PACKET:
+		if (responder)
+			return EINVAL;
+		return modify_raw_qp_sched_elem(qp,
+						requestor ? requestor->obj->object_id : 0);
+	default:
+		return EOPNOTSUPP;
+	}
+}
+
+int mlx5dv_modify_qp_sched_elem(struct ibv_qp *qp,
+				const struct mlx5dv_sched_leaf *requestor,
+				const struct mlx5dv_sched_leaf *responder)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(qp->context);
+
+	if (!dvops || !dvops->modify_qp_sched_elem)
+		return EOPNOTSUPP;
+
+	return dvops->modify_qp_sched_elem(qp, requestor, responder);
+}
+
+int mlx5_modify_qp_drain_sigerr(struct ibv_qp *qp)
+{
+	uint64_t mask = MLX5_QPC_OPT_MASK_INIT2INIT_DRAIN_SIGERR;
+	uint32_t in[DEVX_ST_SZ_DW(init2init_qp_in)] = {};
+	uint32_t out[DEVX_ST_SZ_DW(init2init_qp_out)] = {};
+	void *qpc = DEVX_ADDR_OF(init2init_qp_in, in, qpc);
+	int ret;
+
+	DEVX_SET(init2init_qp_in, in, opcode, MLX5_CMD_OP_INIT2INIT_QP);
+	DEVX_SET(init2init_qp_in, in, qpn, qp->qp_num);
+	DEVX_SET(init2init_qp_in, in, opt_param_mask, mask);
+
+	DEVX_SET(qpc, qpc, drain_sigerr, 1);
+
+	ret = mlx5dv_devx_qp_modify(qp, in, sizeof(in), out, sizeof(out));
+	return ret ? mlx5_get_cmd_status_err(ret, out) : 0;
+}
+
+static struct reserved_qpn_blk *reserved_qpn_blk_alloc(struct mlx5_context *mctx)
+{
+	uint32_t out[DEVX_ST_SZ_DW(general_obj_out_cmd_hdr)] = {};
+	uint32_t in[DEVX_ST_SZ_DW(create_reserved_qpn_in)] = {};
+	struct reserved_qpn_blk *blk;
+	void *attr;
+
+	blk = calloc(1, sizeof(*blk));
+	if (!blk) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	blk->bmp = bitmap_alloc0(1 << mctx->hca_cap_2_caps.log_reserved_qpns_per_obj);
+	if (!blk->bmp) {
+		errno = ENOMEM;
+		goto bmp_alloc_fail;
+	}
+
+	attr = DEVX_ADDR_OF(create_reserved_qpn_in, in, hdr);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, opcode, MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, obj_type, MLX5_OBJ_TYPE_RESERVED_QPN);
+	DEVX_SET(general_obj_in_cmd_hdr,
+		 attr, log_obj_range, mctx->hca_cap_2_caps.log_reserved_qpns_per_obj);
+
+	blk->obj = mlx5dv_devx_obj_create(&mctx->ibv_ctx.context,
+					  in, sizeof(in), out, sizeof(out));
+	if (!blk->obj) {
+		errno = mlx5_get_cmd_status_err(errno, out);
+		goto obj_alloc_fail;
+	}
+
+	blk->first_qpn = blk->obj->object_id;
+	blk->next_avail_slot = 0;
+
+	return blk;
+
+obj_alloc_fail:
+	free(blk->bmp);
+
+bmp_alloc_fail:
+	free(blk);
+	return NULL;
+}
+
+static void reserved_qpn_blk_dealloc(struct reserved_qpn_blk *blk)
+{
+	if (mlx5dv_devx_obj_destroy(blk->obj))
+		assert(false);
+
+	free(blk->bmp);
+	free(blk);
+}
+
+static void reserved_qpn_blks_free(struct mlx5_context *mctx)
+{
+	struct reserved_qpn_blk *blk, *tmp;
+
+	pthread_mutex_lock(&mctx->reserved_qpns.mutex);
+
+	list_for_each_safe(&mctx->reserved_qpns.blk_list,
+			   blk, tmp, entry) {
+		list_del(&blk->entry);
+		reserved_qpn_blk_dealloc(blk);
+	}
+
+	pthread_mutex_unlock(&mctx->reserved_qpns.mutex);
+}
+
+/**
+ * Allocate a reserved QPN either from the last FW object allocated,
+ * or by allocating a new one. When find a free QPN in an object, it
+ * always starts from last allocation position, to make sure the QPN
+ * always move forward to prevent stale QPN.
+ */
+static int _mlx5dv_reserved_qpn_alloc(struct ibv_context *ctx, uint32_t *qpn)
+{
+	struct mlx5_context *mctx = to_mctx(ctx);
+	struct reserved_qpn_blk *blk;
+	uint32_t qpns_per_obj;
+	int ret = 0;
+
+	if (!(mctx->general_obj_types_caps & (1ULL << MLX5_OBJ_TYPE_RESERVED_QPN)))
+		return EOPNOTSUPP;
+
+	qpns_per_obj = 1 << mctx->hca_cap_2_caps.log_reserved_qpns_per_obj;
+
+	pthread_mutex_lock(&mctx->reserved_qpns.mutex);
+
+	blk = list_tail(&mctx->reserved_qpns.blk_list,
+			struct reserved_qpn_blk, entry);
+	if (!blk ||
+	    (blk->next_avail_slot >= qpns_per_obj)) {
+		blk = reserved_qpn_blk_alloc(mctx);
+		if (!blk) {
+			ret = errno;
+			goto end;
+		}
+		list_add_tail(&mctx->reserved_qpns.blk_list, &blk->entry);
+	}
+
+	*qpn = blk->first_qpn + blk->next_avail_slot;
+	bitmap_set_bit(blk->bmp, blk->next_avail_slot);
+	blk->next_avail_slot++;
+
+end:
+	pthread_mutex_unlock(&mctx->reserved_qpns.mutex);
+	return ret;
+}
+
+int mlx5dv_reserved_qpn_alloc(struct ibv_context *ctx, uint32_t *qpn)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx);
+
+	if (!dvops || !dvops->reserved_qpn_alloc)
+		return EOPNOTSUPP;
+
+	return dvops->reserved_qpn_alloc(ctx, qpn);
+}
+
+/**
+ * Deallocate a reserved QPN. The FW object is destroyed only when all QPNs
+ * in this object were used and freed.
+ */
+static int _mlx5dv_reserved_qpn_dealloc(struct ibv_context *ctx, uint32_t qpn)
+{
+	struct mlx5_context *mctx = to_mctx(ctx);
+	struct reserved_qpn_blk *blk, *tmp;
+	uint32_t qpns_per_obj;
+	bool found = false;
+	int ret = 0;
+
+	qpns_per_obj = 1 << mctx->hca_cap_2_caps.log_reserved_qpns_per_obj;
+
+	pthread_mutex_lock(&mctx->reserved_qpns.mutex);
+
+	list_for_each_safe(&mctx->reserved_qpns.blk_list,
+			   blk, tmp, entry) {
+		if ((qpn >= blk->first_qpn) &&
+		    (qpn < blk->first_qpn + qpns_per_obj)) {
+			found = true;
+			break;
+		}
+	}
+
+	if (!found || !bitmap_test_bit(blk->bmp, qpn - blk->first_qpn)) {
+		errno = EINVAL;
+		ret = errno;
+		goto end;
+	}
+
+	bitmap_clear_bit(blk->bmp, qpn - blk->first_qpn);
+	if ((blk->next_avail_slot >= qpns_per_obj) &&
+	    (bitmap_empty(blk->bmp, qpns_per_obj))) {
+		list_del(&blk->entry);
+		reserved_qpn_blk_dealloc(blk);
+	}
+
+end:
+	pthread_mutex_unlock(&mctx->reserved_qpns.mutex);
+	return ret;
+}
+
+int mlx5dv_reserved_qpn_dealloc(struct ibv_context *ctx, uint32_t qpn)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx);
+
+	if (!dvops || !dvops->reserved_qpn_dealloc)
+		return EOPNOTSUPP;
+
+	return dvops->reserved_qpn_dealloc(ctx, qpn);
+}
+
+static int _mlx5dv_init_obj(struct mlx5dv_obj *obj, uint64_t obj_type)
 {
 	int ret = 0;
 
@@ -1147,6 +2064,46 @@ LATEST_SYMVER_FUNC(mlx5dv_init_obj, 1_2, "MLX5_1.2",
 		ret = mlx5dv_get_pd(obj->pd.in, obj->pd.out);
 
 	return ret;
+}
+
+static struct ibv_context *
+get_context_from_obj(struct mlx5dv_obj *obj, uint64_t obj_type)
+{
+	if (obj_type & MLX5DV_OBJ_QP)
+		return obj->qp.in->context;
+	if (obj_type & MLX5DV_OBJ_CQ)
+		return obj->cq.in->context;
+	if (obj_type & MLX5DV_OBJ_SRQ)
+		return obj->srq.in->context;
+	if (obj_type & MLX5DV_OBJ_RWQ)
+		return obj->rwq.in->context;
+	if (obj_type & MLX5DV_OBJ_DM)
+		return obj->dm.in->context;
+	if (obj_type & MLX5DV_OBJ_AH)
+		return obj->ah.in->context;
+	if (obj_type & MLX5DV_OBJ_PD)
+		return obj->pd.in->context;
+
+	return NULL;
+}
+
+LATEST_SYMVER_FUNC(mlx5dv_init_obj, 1_2, "MLX5_1.2",
+		   int,
+		   struct mlx5dv_obj *obj, uint64_t obj_type)
+{
+	struct mlx5_dv_context_ops *dvops;
+	struct ibv_context *ctx;
+
+	ctx = get_context_from_obj(obj, obj_type);
+	if (!ctx)
+		return EINVAL;
+
+	dvops = mlx5_get_dv_ops(ctx);
+
+	if (!dvops || !dvops->init_obj)
+		return EOPNOTSUPP;
+
+	return dvops->init_obj(obj, obj_type);
 }
 
 COMPAT_SYMVER_FUNC(mlx5dv_init_obj, 1_0, "MLX5_1.0",
@@ -1218,13 +2175,11 @@ out:
 	return uar->reg;
 }
 
-int mlx5dv_set_context_attr(struct ibv_context *ibv_ctx,
-			enum mlx5dv_set_ctx_attr_type type, void *attr)
+static int _mlx5dv_set_context_attr(struct ibv_context *ibv_ctx,
+				    enum mlx5dv_set_ctx_attr_type type,
+				    void *attr)
 {
 	struct mlx5_context *ctx = to_mctx(ibv_ctx);
-
-	if (!is_mlx5_dev(ibv_ctx->device))
-		return EOPNOTSUPP;
 
 	switch (type) {
 	case MLX5DV_CTX_ATTR_BUF_ALLOCATORS:
@@ -1237,13 +2192,29 @@ int mlx5dv_set_context_attr(struct ibv_context *ibv_ctx,
 	return 0;
 }
 
-int mlx5dv_get_clock_info(struct ibv_context *ctx_in,
-			  struct mlx5dv_clock_info *clock_info)
+int mlx5dv_set_context_attr(struct ibv_context *ibv_ctx,
+			    enum mlx5dv_set_ctx_attr_type type, void *attr)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ibv_ctx);
+
+	if (!dvops || !dvops->set_context_attr)
+		return EOPNOTSUPP;
+
+	return dvops->set_context_attr(ibv_ctx, type, attr);
+}
+
+static int _mlx5dv_get_clock_info(struct ibv_context *ctx_in,
+				  struct mlx5dv_clock_info *clock_info)
 {
 	struct mlx5_context *ctx = to_mctx(ctx_in);
-	const struct mlx5_ib_clock_info *ci = ctx->clock_info_page;
+	const struct mlx5_ib_clock_info *ci;
 	uint32_t retry, tmp_sig;
 	atomic_uint32_t *sig;
+
+	if (!is_mlx5_dev(ctx_in->device))
+		return EOPNOTSUPP;
+
+	ci = ctx->clock_info_page;
 
 	if (!ci)
 		return EINVAL;
@@ -1270,6 +2241,41 @@ repeat:
 
 	return 0;
 }
+
+int mlx5dv_get_clock_info(struct ibv_context *ctx_in,
+			  struct mlx5dv_clock_info *clock_info)
+{
+	struct mlx5_dv_context_ops *dvops = mlx5_get_dv_ops(ctx_in);
+
+	if (!dvops || !dvops->get_clock_info)
+		return EOPNOTSUPP;
+
+	return dvops->get_clock_info(ctx_in, clock_info);
+}
+
+static struct mlx5_dv_context_ops mlx5_dv_ctx_ops = {
+	.query_device = _mlx5dv_query_device,
+
+	.query_qp_lag_port = _mlx5dv_query_qp_lag_port,
+	.modify_qp_lag_port = _mlx5dv_modify_qp_lag_port,
+
+	.modify_qp_udp_sport = _mlx5dv_modify_qp_udp_sport,
+
+	.sched_node_create = _mlx5dv_sched_node_create,
+	.sched_leaf_create = _mlx5dv_sched_leaf_create,
+	.sched_node_modify = _mlx5dv_sched_node_modify,
+	.sched_leaf_modify = _mlx5dv_sched_leaf_modify,
+	.sched_node_destroy = _mlx5dv_sched_node_destroy,
+	.sched_leaf_destroy = _mlx5dv_sched_leaf_destroy,
+	.modify_qp_sched_elem = _mlx5dv_modify_qp_sched_elem,
+
+	.reserved_qpn_alloc = _mlx5dv_reserved_qpn_alloc,
+	.reserved_qpn_dealloc = _mlx5dv_reserved_qpn_dealloc,
+
+	.set_context_attr = _mlx5dv_set_context_attr,
+	.get_clock_info = _mlx5dv_get_clock_info,
+	.init_obj = _mlx5dv_init_obj,
+};
 
 static void adjust_uar_info(struct mlx5_device *mdev,
 			    struct mlx5_context *context,
@@ -1327,44 +2333,39 @@ static int get_uar_info(struct mlx5_device *mdev,
 
 static void mlx5_uninit_context(struct mlx5_context *context)
 {
-	close_debug_file(context);
+	mlx5_close_debug_file(context->dbg_fp);
 
 	verbs_uninit_context(&context->ibv_ctx);
 	free(context);
 }
 
 static struct mlx5_context *mlx5_init_context(struct ibv_device *ibdev,
-						int cmd_fd,
-						void *private_data)
+						int cmd_fd)
 {
-	struct mlx5dv_context_attr *ctx_attr = private_data;
 	struct mlx5_device *mdev = to_mdev(ibdev);
 	struct mlx5_context *context;
 	int low_lat_uuars;
 	int tot_uuars;
 	int ret;
 
-	if (ctx_attr && ctx_attr->comp_mask) {
-		errno = EINVAL;
-		return NULL;
-	}
-
-	ret = get_uar_info(mdev, &tot_uuars, &low_lat_uuars);
-	if (ret)
-		return NULL;
-
 	context = verbs_init_and_alloc_context(ibdev, cmd_fd, context, ibv_ctx,
 					       RDMA_DRIVER_MLX5);
 	if (!context)
 		return NULL;
 
-	open_debug_file(context);
-	set_debug_mask();
+	mlx5_open_debug_file(&context->dbg_fp);
+	mlx5_set_debug_mask();
 	set_freeze_on_error();
 	if (gethostname(context->hostname, sizeof(context->hostname)))
 		strcpy(context->hostname, "host_unknown");
 
 	mlx5_single_threaded = single_threaded_app();
+
+	ret = get_uar_info(mdev, &tot_uuars, &low_lat_uuars);
+	if (ret) {
+		mlx5_uninit_context(context);
+		return NULL;
+	}
 	context->tot_uuars = tot_uuars;
 	context->low_lat_uuars = low_lat_uuars;
 
@@ -1377,7 +2378,6 @@ static int mlx5_set_context(struct mlx5_context *context,
 {
 	struct verbs_context *v_ctx = &context->ibv_ctx;
 	struct ibv_port_attr port_attr = {};
-	struct ibv_device_attr_ex device_attr = {};
 	int cmd_fd = v_ctx->context.cmd_fd;
 	struct mlx5_device *mdev = to_mdev(v_ctx->context.device);
 	struct ibv_device *ibdev = v_ctx->context.device;
@@ -1401,6 +2401,16 @@ static int mlx5_set_context(struct mlx5_context *context,
 	if (resp->comp_mask & MLX5_IB_ALLOC_UCONTEXT_RESP_MASK_ECE)
 		context->flags |= MLX5_CTX_FLAGS_ECE_SUPPORTED;
 
+	if (resp->comp_mask & MLX5_IB_ALLOC_UCONTEXT_RESP_MASK_SQD2RTS)
+		context->flags |= MLX5_CTX_FLAGS_SQD2RTS_SUPPORTED;
+
+	if (resp->comp_mask & MLX5_IB_ALLOC_UCONTEXT_RESP_MASK_REAL_TIME_TS)
+		context->flags |= MLX5_CTX_FLAGS_REAL_TIME_TS_SUPPORTED;
+
+	if (resp->comp_mask &
+	    MLX5_IB_ALLOC_UCONTEXT_RESP_MASK_MKEY_UPDATE_TAG)
+		context->flags |= MLX5_CTX_FLAGS_MKEY_UPDATE_TAG_SUPPORTED;
+
 	if (resp->comp_mask & MLX5_IB_ALLOC_UCONTEXT_RESP_MASK_DUMP_FILL_MKEY) {
 		context->dump_fill_mkey = resp->dump_fill_mkey;
 		/* Have the BE value ready to be used in data path */
@@ -1419,7 +2429,7 @@ static int mlx5_set_context(struct mlx5_context *context,
 	context->cmds_supp_uhw = resp->cmds_supp_uhw;
 	context->vendor_cap_flags = 0;
 	list_head_init(&context->dyn_uar_bf_list);
-	list_head_init(&context->dyn_uar_nc_list);
+	list_head_init(&context->dyn_uar_db_list);
 	list_head_init(&context->dyn_uar_qp_shared_list);
 	list_head_init(&context->dyn_uar_qp_dedicated_list);
 
@@ -1432,16 +2442,22 @@ static int mlx5_set_context(struct mlx5_context *context,
 	pthread_mutex_init(&context->qp_table_mutex, NULL);
 	pthread_mutex_init(&context->srq_table_mutex, NULL);
 	pthread_mutex_init(&context->uidx_table_mutex, NULL);
+	pthread_mutex_init(&context->mkey_table_mutex, NULL);
 	pthread_mutex_init(&context->dyn_bfregs_mutex, NULL);
+	pthread_mutex_init(&context->crypto_login_mutex, NULL);
 	for (i = 0; i < MLX5_QP_TABLE_SIZE; ++i)
 		context->qp_table[i].refcnt = 0;
 
 	for (i = 0; i < MLX5_QP_TABLE_SIZE; ++i)
 		context->uidx_table[i].refcnt = 0;
 
-	context->db_list = NULL;
+	for (i = 0; i < MLX5_MKEY_TABLE_SIZE; ++i)
+		context->mkey_table[i].refcnt = 0;
 
-	pthread_mutex_init(&context->db_list_mutex, NULL);
+	list_head_init(&context->dbr_available_pages);
+	cl_qmap_init(&context->dbr_map);
+
+	pthread_mutex_init(&context->dbr_map_mutex, NULL);
 
 	context->prefer_bf = get_always_bf();
 	context->shut_up_bf = get_shut_up_bf();
@@ -1522,15 +2538,9 @@ bf_done:
 		else
 			goto err_free;
 	}
+	context->dv_ctx_ops = &mlx5_dv_ctx_ops;
 
-	if (!mlx5_query_device_ex(&v_ctx->context, NULL, &device_attr,
-				  sizeof(struct ibv_device_attr_ex))) {
-		context->cached_device_cap_flags =
-			device_attr.orig_attr.device_cap_flags;
-		context->atomic_cap = device_attr.orig_attr.atomic_cap;
-		context->cached_tso_caps = device_attr.tso_caps;
-		context->max_dm_size = device_attr.max_dm_size;
-	}
+	mlx5_query_device_ctx(context);
 
 	for (j = 0; j < min(MLX5_MAX_PORTS_NUM, context->num_ports); ++j) {
 		memset(&port_attr, 0, sizeof(port_attr));
@@ -1540,9 +2550,11 @@ bf_done:
 		}
 	}
 
-	context->cq_uar = mlx5_attach_dedicated_uar(&v_ctx->context,
-						    MLX5_IB_UAPI_UAR_ALLOC_TYPE_NC);
-	context->cq_uar_reg = context->cq_uar ? context->cq_uar->uar : context->uar[0].reg;
+	mlx5_set_singleton_nc_uar(&v_ctx->context);
+	context->cq_uar_reg = context->nc_uar ? context->nc_uar->uar : context->uar[0].reg;
+
+	pthread_mutex_init(&context->reserved_qpns.mutex, NULL);
+	list_head_init(&context->reserved_qpns.blk_list);
 
 	return 0;
 
@@ -1569,9 +2581,14 @@ static struct verbs_context *mlx5_alloc_context(struct ibv_device *ibdev,
 	bool				always_devx = false;
 	int ret;
 
-	context = mlx5_init_context(ibdev, cmd_fd, NULL);
+	context = mlx5_init_context(ibdev, cmd_fd);
 	if (!context)
 		return NULL;
+
+	if (ctx_attr && ctx_attr->comp_mask) {
+		errno = EINVAL;
+		goto err;
+	}
 
 	req.total_num_bfregs = context->tot_uuars;
 	req.num_low_latency_bfregs = context->low_lat_uuars;
@@ -1627,7 +2644,7 @@ static struct verbs_context *mlx5_import_context(struct ibv_device *ibdev,
 	struct mlx5_context *mctx;
 	int ret;
 
-	mctx = mlx5_init_context(ibdev, cmd_fd, NULL);
+	mctx = mlx5_init_context(ibdev, cmd_fd);
 	if (!mctx)
 		return NULL;
 
@@ -1665,8 +2682,9 @@ static void mlx5_free_context(struct ibv_context *ibctx)
 		       page_size);
 	if (context->clock_info_page)
 		munmap((void *)context->clock_info_page, page_size);
-	close_debug_file(context);
+	mlx5_close_debug_file(context->dbg_fp);
 	clean_dyn_uars(ibctx);
+	reserved_qpn_blks_free(context);
 
 	verbs_uninit_context(&context->ibv_ctx);
 	free(context);
@@ -1690,6 +2708,7 @@ static struct verbs_device *mlx5_device_alloc(struct verbs_sysfs_dev *sysfs_dev)
 	dev->page_size   = sysconf(_SC_PAGESIZE);
 	dev->driver_abi_ver = sysfs_dev->abi_ver;
 
+	mlx5_set_dv_ctx_ops(&mlx5_dv_ctx_ops);
 	return &dev->verbs_dev;
 }
 
@@ -1697,17 +2716,27 @@ static const struct verbs_device_ops mlx5_dev_ops = {
 	.name = "mlx5",
 	.match_min_abi_version = MLX5_UVERBS_MIN_ABI_VERSION,
 	.match_max_abi_version = MLX5_UVERBS_MAX_ABI_VERSION,
-	.match_table = hca_table,
+	.match_table = mlx5_hca_table,
 	.alloc_device = mlx5_device_alloc,
 	.uninit_device = mlx5_uninit_device,
 	.alloc_context = mlx5_alloc_context,
 	.import_context = mlx5_import_context,
 };
 
-bool is_mlx5_dev(struct ibv_device *device)
+static bool is_mlx5_dev(struct ibv_device *device)
 {
 	struct verbs_device *verbs_device = verbs_get_device(device);
 
 	return verbs_device->ops == &mlx5_dev_ops;
+}
+
+struct mlx5_dv_context_ops *mlx5_get_dv_ops(struct ibv_context *ibctx)
+{
+	if (is_mlx5_dev(ibctx->device))
+		return to_mctx(ibctx)->dv_ctx_ops;
+	else if (is_mlx5_vfio_dev(ibctx->device))
+		return to_mvfio_ctx(ibctx)->dv_ctx_ops;
+	else
+		return NULL;
 }
 PROVIDER_DRIVER(mlx5, mlx5_dev_ops);

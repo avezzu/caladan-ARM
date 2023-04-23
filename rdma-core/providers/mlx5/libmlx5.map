@@ -105,9 +105,6 @@ MLX5_1.10 {
 		mlx5dv_dr_table_create;
 		mlx5dv_dr_table_destroy;
 		mlx5dv_qp_ex_from_ibv_qp_ex;
-		switch_qp_action;
-		postsend_lock;
-		postsend_unlock;
 } MLX5_1.9;
 
 MLX5_1.11 {
@@ -155,3 +152,80 @@ MLX5_1.16 {
 		mlx5dv_dr_action_create_dest_array;
 		mlx5dv_dr_action_create_flow_sampler;
 } MLX5_1.15;
+
+MLX5_1.17 {
+	global:
+		mlx5dv_dr_action_create_aso;
+		mlx5dv_dr_action_create_pop_vlan;
+		mlx5dv_dr_action_create_push_vlan;
+		mlx5dv_dr_action_modify_aso;
+		mlx5dv_modify_qp_sched_elem;
+		mlx5dv_modify_qp_udp_sport;
+		mlx5dv_sched_leaf_create;
+		mlx5dv_sched_leaf_destroy;
+		mlx5dv_sched_leaf_modify;
+		mlx5dv_sched_node_create;
+		mlx5dv_sched_node_destroy;
+		mlx5dv_sched_node_modify;
+} MLX5_1.16;
+
+MLX5_1.18 {
+	global:
+		mlx5dv_reserved_qpn_alloc;
+		mlx5dv_reserved_qpn_dealloc;
+} MLX5_1.17;
+
+MLX5_1.19 {
+        global:
+		mlx5dv_devx_umem_reg_ex;
+		mlx5dv_dm_map_op_addr;
+		_mlx5dv_query_port;
+} MLX5_1.18;
+
+MLX5_1.20 {
+	global:
+		mlx5dv_dr_domain_allow_duplicate_rules;
+		mlx5dv_map_ah_to_qp;
+		mlx5dv_qp_cancel_posted_send_wrs;
+		_mlx5dv_mkey_check;
+} MLX5_1.19;
+
+MLX5_1.21 {
+	global:
+		mlx5dv_crypto_login;
+		mlx5dv_crypto_login_query_state;
+		mlx5dv_crypto_logout;
+		mlx5dv_dci_stream_id_reset;
+		mlx5dv_dek_create;
+		mlx5dv_dek_destroy;
+		mlx5dv_dek_query;
+		mlx5dv_dr_action_create_dest_ib_port;
+		mlx5dv_dr_matcher_set_layout;
+		mlx5dv_get_vfio_device_list;
+		mlx5dv_vfio_get_events_fd;
+		mlx5dv_vfio_process_events;
+} MLX5_1.20;
+
+MLX5_1.22 {
+	global:
+		mlx5dv_dr_aso_other_domain_link;
+		mlx5dv_dr_aso_other_domain_unlink;
+} MLX5_1.21;
+
+MLX5_1.23 {
+	global:
+		mlx5dv_devx_alloc_msi_vector;
+		mlx5dv_devx_create_eq;
+		mlx5dv_devx_destroy_eq;
+		mlx5dv_devx_free_msi_vector;
+} MLX5_1.22;
+
+MLX5_1.24 {
+	global:
+		mlx5dv_create_steering_anchor;
+		mlx5dv_crypto_login_create;
+		mlx5dv_crypto_login_destroy;
+		mlx5dv_crypto_login_query;
+		mlx5dv_destroy_steering_anchor;
+		mlx5dv_dr_action_create_dest_root_table;
+} MLX5_1.23;

@@ -71,7 +71,7 @@ void parse_iwpm_config(FILE *fp)
 	while (str) {
 		if (line_buf[0] == '#' || line_buf[0] == '\n')
 			goto parse_next_line;
-		n = sscanf(line_buf, "%64[^= ] %*[=]%d", param_name, &val);
+		n = sscanf(line_buf, "%63[^= ] %*[=]%d", param_name, &val);
 		if (n != 2) {
 			syslog(LOG_WARNING, "parse_iwpm_config: Couldn't parse a line (n = %d, name = %s, val = %d\n", n, param_name, val);
 			goto parse_next_line;
@@ -264,7 +264,7 @@ create_nl_socket_exit:
  */
 void destroy_iwpm_socket(int pm_sock)
 {
-	if (pm_sock > 0)
+	if (pm_sock >= 0)
 		close(pm_sock);
 	pm_sock = -1;
 }
@@ -570,6 +570,10 @@ void copy_iwpm_sockaddr(__u16 addr_family, struct sockaddr_storage *src_sockaddr
 		*dst = *src;
 		break;
 	}
+	default:
+	assert(false);
+	if (dst_sockaddr)
+		dst_sockaddr->ss_family = addr_family;
 	}
 }
 

@@ -50,12 +50,19 @@
 #include <sys/mman.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <ccan/list.h>
 
 #include <infiniband/driver.h>
 #include <infiniband/verbs.h>
 
-int bnxt_re_query_device(struct ibv_context *uctx,
-			 struct ibv_device_attr *attr);
+struct bnxt_re_work_compl {
+	struct list_node list;
+	struct ibv_wc wc;
+};
+
+int bnxt_re_query_device(struct ibv_context *context,
+			 const struct ibv_query_device_ex_input *input,
+			 struct ibv_device_attr_ex *attr, size_t attr_size);
 int bnxt_re_query_port(struct ibv_context *uctx, uint8_t port,
 		       struct ibv_port_attr *attr);
 struct ibv_pd *bnxt_re_alloc_pd(struct ibv_context *uctx);
@@ -66,6 +73,7 @@ int bnxt_re_dereg_mr(struct verbs_mr *vmr);
 
 struct ibv_cq *bnxt_re_create_cq(struct ibv_context *uctx, int ncqe,
 				 struct ibv_comp_channel *ch, int vec);
+int bnxt_re_resize_cq(struct ibv_cq *ibvcq, int ncqe);
 int bnxt_re_destroy_cq(struct ibv_cq *ibvcq);
 int bnxt_re_poll_cq(struct ibv_cq *ibvcq, int nwc, struct ibv_wc *wc);
 int bnxt_re_arm_cq(struct ibv_cq *ibvcq, int flags);

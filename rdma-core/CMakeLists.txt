@@ -53,7 +53,12 @@
 #      (without man pages) when neither pandoc/rst2man nor the pandoc-prebuilt
 #      directory are available.
 
-cmake_minimum_required(VERSION 2.8.11 FATAL_ERROR)
+if (${CMAKE_VERSION} VERSION_LESS "3.18.1")
+	# Centos 7 support
+	cmake_minimum_required(VERSION 2.8.12 FATAL_ERROR)
+else()
+	cmake_minimum_required(VERSION 3.18.1 FATAL_ERROR)
+endif()
 project(rdma-core C)
 
 # CMake likes to use -rdynamic too much, they fixed it in 3.4.
@@ -72,11 +77,11 @@ endif()
 set(PACKAGE_NAME "RDMA")
 
 # See Documentation/versioning.md
-set(PACKAGE_VERSION "32.0")
+set(PACKAGE_VERSION "46.0")
 # When this is changed the values in these files need changing too:
 #   debian/control
 #   debian/libibverbs1.symbols
-set(IBVERBS_PABI_VERSION "25")
+set(IBVERBS_PABI_VERSION "34")
 set(IBVERBS_PROVIDER_SUFFIX "-rdmav${IBVERBS_PABI_VERSION}.so")
 
 #-------------------------
@@ -84,32 +89,34 @@ set(IBVERBS_PROVIDER_SUFFIX "-rdmav${IBVERBS_PABI_VERSION}.so")
 
 # Override the CMAKE_INSTALL_ dirs to be under the build/ directory
 if (IN_PLACE)
-  set(CMAKE_INSTALL_SYSCONFDIR "${CMAKE_BINARY_DIR}/etc")
-  set(CMAKE_INSTALL_BINDIR "${CMAKE_BINARY_DIR}/bin")
-  set(CMAKE_INSTALL_SBINDIR "${CMAKE_BINARY_DIR}/bin")
-  set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}")
+  set(CMAKE_INSTALL_SYSCONFDIR "${PROJECT_BINARY_DIR}/etc")
+  set(CMAKE_INSTALL_BINDIR "${PROJECT_BINARY_DIR}/bin")
+  set(CMAKE_INSTALL_SBINDIR "${PROJECT_BINARY_DIR}/bin")
+  set(CMAKE_INSTALL_PREFIX "${PROJECT_BINARY_DIR}")
   set(CMAKE_INSTALL_LIBDIR "lib")
   set(CMAKE_INSTALL_INCLUDEDIR "include")
 endif()
 
 include(GNUInstallDirs)
 # C include root
-set(BUILD_INCLUDE ${CMAKE_BINARY_DIR}/include)
+set(BUILD_INCLUDE ${PROJECT_BINARY_DIR}/include)
 # Executables
-set(BUILD_BIN ${CMAKE_BINARY_DIR}/bin)
+set(BUILD_BIN ${PROJECT_BINARY_DIR}/bin)
 # Libraries
-set(BUILD_LIB ${CMAKE_BINARY_DIR}/lib)
+set(BUILD_LIB ${PROJECT_BINARY_DIR}/lib)
 # Static library pre-processing
-set(BUILD_STATIC_LIB ${CMAKE_BINARY_DIR}/lib/statics)
+set(BUILD_STATIC_LIB ${PROJECT_BINARY_DIR}/lib/statics)
 # Used for IN_PLACE configuration
-set(BUILD_ETC ${CMAKE_BINARY_DIR}/etc)
-set(BUILD_PYTHON ${CMAKE_BINARY_DIR}/python)
+set(BUILD_ETC ${PROJECT_BINARY_DIR}/etc)
+set(BUILD_PYTHON ${PROJECT_BINARY_DIR}/python)
 
 set(IBDIAG_CONFIG_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}/infiniband-diags")
 set(IBDIAG_NODENAME_MAP_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}/rdma/ib-node-name-map")
 
 set(CMAKE_INSTALL_INITDDIR "${CMAKE_INSTALL_SYSCONFDIR}/init.d"
   CACHE PATH "Location for init.d files")
+set(CMAKE_INSTALL_MODPROBEDIR "${CMAKE_INSTALL_SYSCONFDIR}/modprobe.d/"
+  CACHE PATH "Location for modprobe.d files")
 set(CMAKE_INSTALL_SYSTEMD_SERVICEDIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system"
   CACHE PATH "Location for systemd service files")
 set(CMAKE_INSTALL_SYSTEMD_BINDIR "/lib/systemd"
@@ -164,7 +171,7 @@ set(DISTRO_FLAVOUR "None" CACHE
 
 #-------------------------
 # Load CMake components
-set(BUILDLIB "${CMAKE_SOURCE_DIR}/buildlib")
+set(BUILDLIB "${PROJECT_SOURCE_DIR}/buildlib")
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${BUILDLIB}")
 
 include(CMakeParseArguments)
@@ -197,6 +204,13 @@ endif()
 RDMA_BuildType()
 include_directories(${BUILD_INCLUDE})
 
+# Working means that the compiler doesn't spew output that confuses cmake's
+# capabilitiy tests. ie cmake will test and succeed a simple program
+RDMA_Check_C_Compiles(HAVE_WORKING_WERROR "int main(int argc,const char *argv[]) { return 0; }" "")
+if (NOT HAVE_WORKING_WERROR)
+  message(FATAL_ERROR "-Werror doesn't work (compiler always creates warnings?). Werror is required for CMake.")
+endif()
+
 # Look for Python. We prefer some variant of python 3 if the system has it.
 FIND_PACKAGE(PythonInterp 3 QUIET)
 if (PythonInterp_FOUND)
@@ -210,6 +224,11 @@ else()
   # But we still must have python (be it 2) for the build process:
   FIND_PACKAGE(PythonInterp REQUIRED)
   set(CYTHON_EXECUTABLE "")
+endif()
+
+find_program(SYSTEMCTL_BIN systemctl HINTS "/usr/bin" "/bin")
+if (NOT SYSTEMCTL_BIN)
+  set (SYSTEMCTL_BIN "/bin/systemctl")
 endif()
 
 RDMA_CheckSparse()
@@ -233,28 +252,33 @@ RDMA_AddOptCFlag(CMAKE_C_FLAGS HAVE_C_WNESTED_EXTERNS "-Wnested-externs")
 
 # At some point after 4.4 gcc fixed shadow to ignore function vs variable
 # conflicts
-set(SAFE_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
-  set(CMAKE_REQUIRED_FLAGS "-Wshadow")
-CHECK_C_SOURCE_COMPILES("
+RDMA_Check_C_Compiles(HAVE_C_WORKING_SHADOW "
  #include <unistd.h>
  int main(int argc,const char *argv[]) { int access = 1; return access; }"
-  HAVE_C_WORKING_SHADOW
-  FAIL_REGEX "warning")
+  "-Wshadow")
 if (HAVE_C_WORKING_SHADOW)
   RDMA_AddOptCFlag(CMAKE_C_FLAGS HAVE_C_WORKING_SHADOW "-Wshadow")
 endif()
-set(CMAKE_REQUIRED_FLAGS "${SAFE_CMAKE_REQUIRED_FLAGS}")
 
 # At some point around 5.4 gcc fixed missing-field-initializers to ignore this
 # common idiom we use extensively. Since this is a useful warning for
 # developers try and leave it on if the compiler supports it.
-CHECK_C_SOURCE_COMPILES("
+RDMA_Check_C_Compiles(HAVE_C_WORKING_MISSING_FIELD_INITIALIZERS "
  struct foo { int a; int b; };
  int main(int argc,const char *argv[]) { struct foo tmp = {}; return tmp.a; }"
-  HAVE_C_WORKING_MISSING_FIELD_INITIALIZERS
-  FAIL_REGEX "warning")
+)
 if (NOT HAVE_C_WORKING_MISSING_FIELD_INITIALIZERS)
   RDMA_AddOptCFlag(CMAKE_C_FLAGS HAVE_C_WNO_MISSING_FIELD_INITIALIZERS "-Wno-missing-field-initializers")
+endif()
+
+# clang doesn't support variable size GCC extension
+RDMA_Check_C_Compiles(HAVE_C_VARIABLE_SIZE "
+ struct c { int a; int b[]; };
+ struct foo { struct c c; int b; };
+ int main(int argc,const char *argv[]) { return 0; }"
+)
+if (NOT HAVE_C_VARIABLE_SIZE)
+	RDMA_AddOptCFlag(CMAKE_C_FLAGS HAVE_C_WNO_VARIABLE_SIZE "-Wno-gnu-variable-sized-type-not-at-end")
 endif()
 
 # Check that the compiler supports -fno-strict-aliasing.
@@ -268,7 +292,7 @@ set(NO_VAR_TRACKING_FLAGS "")
 RDMA_AddOptCFlag(NO_VAR_TRACKING_FLAGS HAVE_NO_VAR_TRACKING_ASSIGNMENTS
   "-fno-var-tracking-assignments")
 
-CHECK_C_SOURCE_COMPILES("
+RDMA_Check_C_Compiles(HAVE_FUNC_ATTRIBUTE_IFUNC "
  #include <unistd.h>
 
  void entry(void);
@@ -279,8 +303,16 @@ CHECK_C_SOURCE_COMPILES("
  static fn_t resolve_entry(void) {return &do_entry;}
 
  int main(int argc,const char *argv[]) { entry(); }"
-  HAVE_FUNC_ATTRIBUTE_IFUNC
-  FAIL_REGEX "warning")
+)
+
+RDMA_Check_C_Compiles(HAVE_FUNC_ATTRIBUTE_SYMVER "
+ #include <unistd.h>
+
+ void _sym(void);
+ __attribute__((__symver__(\"sym@TEST_1.1\"))) void _sym(void) {}
+
+ int main(int argc,const char *argv[]) { _sym(); }"
+)
 
 # The code does not do the racy fcntl if the various CLOEXEC's are not
 # supported so it really doesn't work right if this isn't available. Thus hard
@@ -320,19 +352,17 @@ if (NOT HAS_CLOEXEC)
 endif()
 
 # always_inline is supported
-CHECK_C_SOURCE_COMPILES("
+RDMA_Check_C_Compiles(HAVE_FUNC_ATTRIBUTE_ALWAYS_INLINE "
  int foo(void);
  inline __attribute__((always_inline)) int foo(void) {return 0;}
  int main(int argc,const char *argv[]) { return foo(); }"
-  HAVE_FUNC_ATTRIBUTE_ALWAYS_INLINE
-  FAIL_REGEX "warning")
+)
 
 # Linux __u64 is an unsigned long long
-CHECK_C_SOURCE_COMPILES("
+RDMA_Check_C_Compiles(HAVE_LONG_LONG_U64 "
 #include <linux/types.h>
  int main(int argc,const char *argv[]) { __u64 tmp = 0; unsigned long long *tmp2 = &tmp; return *tmp2; }"
-  HAVE_LONG_LONG_U64
-  FAIL_REGEX "warning")
+)
 
 if (NOT HAVE_LONG_LONG_U64)
   # Modern Linux has switched to use ull in all cases, but to avoid disturbing
@@ -422,7 +452,7 @@ if (CYTHON_EXECUTABLE)
 
  # Get a default installation path
   execute_process(COMMAND "${PYTHON_EXECUTABLE}" -c
-    "from distutils.sysconfig import get_python_lib; print(get_python_lib(True, False, '${CMAKE_INSTALL_PREFIX}'))"
+    "import sysconfig; print(sysconfig.get_path(\"platlib\"))"
   OUTPUT_VARIABLE py_path)
   string(STRIP ${py_path} py_path)
   set(CMAKE_INSTALL_PYTHON_ARCH_LIB "${py_path}"
@@ -496,14 +526,35 @@ check_type_size("long" SIZEOF_LONG BUILTIN_TYPES_ONLY LANGUAGE C)
 # Determine if this arch supports cache coherent DMA. This isn't really an
 # arch specific property, but for our purposes arches that do not support it
 # also do not define wmb/etc which breaks our compile.
+# As a special case s390x always has coherent DMA but needs linking for its wmb
 CHECK_C_SOURCE_COMPILES("
+#if !defined(__s390x__)
 #include \"${CMAKE_CURRENT_SOURCE_DIR}/util/udma_barrier.h\"
+#endif
  int main(int argc,const char *argv[]) {return 0;}"
   HAVE_COHERENT_DMA)
 
 find_package(Systemd)
 include_directories(${SYSTEMD_INCLUDE_DIRS})
 RDMA_DoFixup("${SYSTEMD_FOUND}" "systemd/sd-daemon.h")
+
+# drm headers
+
+# Check if the headers have been installed by kernel-headers
+find_path(DRM_INCLUDE_DIRS "drm.h" PATH_SUFFIXES "drm")
+
+# Alternatively the headers could have been installed by libdrm
+if (NOT DRM_INCLUDE_DIRS)
+  pkg_check_modules(DRM libdrm)
+endif()
+
+if (DRM_INCLUDE_DIRS)
+  if (EXISTS ${DRM_INCLUDE_DIRS}/i915_drm.h AND EXISTS ${DRM_INCLUDE_DIRS}/amdgpu_drm.h)
+    include_directories(${DRM_INCLUDE_DIRS})
+  else()
+    unset(DRM_INCLUDE_DIRS CACHE)
+  endif()
+endif()
 
 #-------------------------
 # Apply fixups
@@ -561,17 +612,13 @@ endif()
 # Old versions of libnl have a duplicated rtnl_route_put, disbale the warning on those
 # systems
 if (NOT NL_KIND EQUAL 0)
-  set(SAFE_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
   set(SAFE_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
   set(CMAKE_REQUIRED_INCLUDES "${NL_INCLUDE_DIRS}")
-  set(CMAKE_REQUIRED_FLAGS "-Wredundant-decls")
-  CHECK_C_SOURCE_COMPILES("
+  RDMA_Check_C_Compiles(HAVE_C_WREDUNDANT_DECLS "
  #include <netlink/route/route.h>
  int main(int argc,const char *argv[]) { return 0; }"
-  HAVE_C_WREDUNDANT_DECLS
-  FAIL_REGEX "warning")
+  "-Wredundant-decls")
   set(CMAKE_REQUIRED_INCLUDES "${SAFE_CMAKE_REQUIRED_INCLUDES}")
-  set(CMAKE_REQUIRED_FLAGS "${SAFE_CMAKE_REQUIRED_FLAGS}")
 endif()
 RDMA_AddOptCFlag(CMAKE_C_FLAGS HAVE_C_WREDUNDANT_DECLS "-Wredundant-decls")
 
@@ -582,12 +629,34 @@ CHECK_C_SOURCE_COMPILES("
  HAVE_GLIBC_GETRANDOM)
 RDMA_DoFixup("${HAVE_GLIBC_GETRANDOM}" "sys/random.h")
 
+# glibc 2.33 and newer stopped to properly declare __fxstat in sys/stat.h
+RDMA_Check_C_Compiles(HAVE_GLIBC_FXSTAT "
+ #include <sys/stat.h>
+ int main(int argc,const char *argv[]) {
+ struct stat stat = {};  __fxstat(0, 0, &stat);  return 0;}")
+RDMA_DoFixup("${HAVE_GLIBC_FXSTAT}" "sys/stat.h")
+
+
+# glibc before 2.35 does not necesarily define the HWCAP_S390_PCI_MIO hardware
+# capability bit constant. Check for it and if necessary shim it in such that
+# kernel support for PCI MIO instructions can always be checked.
+RDMA_Check_C_Compiles(HAVE_GLIBC_HWCAP_S390_PCI_MIO "
+ #if defined(__s390x__)
+ #include <sys/auxv.h>
+ int main(int argc, const char *argv[]) {
+ return !!(getauxval(AT_HWCAP) & HWCAP_S390_PCI_MIO);}
+ #else
+ int main(int argc, const char *argv[]) {return 0;}
+ #endif
+ ")
+RDMA_DoFixup("${HAVE_GLIBC_HWCAP_S390_PCI_MIO}" "sys/auxv.h")
+
 #-------------------------
 # Build Prep
 # Write out a git ignore file to the build directory if it isn't the source
 # directory. For developer convenience
 if (NOT ${CMAKE_CURRENT_BINARY_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
-  file(WRITE ${CMAKE_BINARY_DIR}/.gitignore "*")
+  file(WRITE ${PROJECT_BINARY_DIR}/.gitignore "*")
 endif()
 
 if ("${IOCTL_MODE}" STREQUAL "both")
@@ -624,6 +693,7 @@ configure_file("${BUILDLIB}/config.h.in" "${BUILD_INCLUDE}/config.h" ESCAPE_QUOT
 # Sub-directories
 add_subdirectory(ccan)
 add_subdirectory(util)
+add_subdirectory(util/tests)
 add_subdirectory(Documentation)
 add_subdirectory(kernel-boot)
 add_subdirectory(kernel-headers)
@@ -641,8 +711,11 @@ add_subdirectory(providers/bnxt_re)
 add_subdirectory(providers/cxgb4) # NO SPARSE
 add_subdirectory(providers/efa)
 add_subdirectory(providers/efa/man)
+add_subdirectory(providers/erdma)
 add_subdirectory(providers/hns)
-add_subdirectory(providers/i40iw) # NO SPARSE
+add_subdirectory(providers/irdma)
+add_subdirectory(providers/mana)
+add_subdirectory(providers/mana/man)
 add_subdirectory(providers/mlx4)
 add_subdirectory(providers/mlx4/man)
 add_subdirectory(providers/mlx5)
@@ -700,6 +773,9 @@ endif()
 if (NOT HAVE_FUNC_ATTRIBUTE_IFUNC)
   message(STATUS " Compiler attribute ifunc NOT supported")
 endif()
+if (NOT HAVE_FUNC_ATTRIBUTE_SYMVER)
+  message(STATUS " Compiler attribute symver NOT supported, can not use LTO")
+endif()
 if (NOT HAVE_COHERENT_DMA)
   message(STATUS " Architecture NOT able to do coherent DMA (check util/udma_barrier.h) some providers disabled!")
 endif()
@@ -729,14 +805,14 @@ if (NO_MAN_PAGES)
   message(STATUS " man pages NOT built")
 else()
   if (NOT PANDOC_FOUND)
-    if (NOT EXISTS "${CMAKE_SOURCE_DIR}/buildlib/pandoc-prebuilt")
+    if (NOT EXISTS "${PROJECT_SOURCE_DIR}/buildlib/pandoc-prebuilt")
       message(STATUS " pandoc NOT found and NO prebuilt man pages. 'install' disabled")
     else()
       message(STATUS " pandoc NOT found (using prebuilt man pages)")
     endif()
   endif()
   if (NOT RST2MAN_FOUND)
-    if (NOT EXISTS "${CMAKE_SOURCE_DIR}/buildlib/pandoc-prebuilt")
+    if (NOT EXISTS "${PROJECT_SOURCE_DIR}/buildlib/pandoc-prebuilt")
       message(STATUS " rst2man NOT found and NO prebuilt man pages. 'install' disabled")
     else()
       message(STATUS " rst2man NOT found (using prebuilt man pages)")
@@ -772,4 +848,10 @@ if (NOT HAVE_GLIBC_UAPI_COMPAT)
 endif()
 if (NOT HAVE_TARGET_SSE)
   message(STATUS " attribute(target(\"sse\")) does NOT work")
+endif()
+if (NOT DRM_INCLUDE_DIRS)
+  message(STATUS " DMABUF NOT supported (disabling some tests)")
+endif()
+if (NOT HAVE_GLIBC_HWCAP_S390_PCI_MIO )
+  message(STATUS " Glibc version does not contain the HWCAP_S390_PCI_MIO bit, using shim version")
 endif()

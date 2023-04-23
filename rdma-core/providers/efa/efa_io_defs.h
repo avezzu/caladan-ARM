@@ -1,19 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause */
 /*
- * Copyright 2018-2019 Amazon.com, Inc. or its affiliates. All rights reserved.
+ * Copyright 2018-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
 #ifndef _EFA_IO_H_
 #define _EFA_IO_H_
-
-#define EFA_GET(ptr, type) \
-	((*(ptr) & type##_MASK) >> type##_SHIFT)
-
-#define EFA_SET(ptr, type, value) \
-	({ *(ptr) |= ((value) << type##_SHIFT) & type##_MASK; })
-
-#define BIT(nr) (1UL << (nr))
-#define GENMASK(h, l) (((1U << ((h) - (l) + 1)) - 1) << (l))
 
 #define EFA_IO_TX_DESC_NUM_BUFS              2
 #define EFA_IO_TX_DESC_NUM_RDMA_BUFS         1
@@ -61,6 +52,8 @@ enum efa_io_comp_status {
 	EFA_IO_COMP_STATUS_REMOTE_ERROR_BAD_LENGTH  = 11,
 	/* Unexpected status returned by responder */
 	EFA_IO_COMP_STATUS_REMOTE_ERROR_BAD_STATUS  = 12,
+	/* Unresponsive remote - detected locally */
+	EFA_IO_COMP_STATUS_LOCAL_ERROR_UNRESP_REMOTE = 13,
 };
 
 struct efa_io_tx_meta_desc {
@@ -226,9 +219,7 @@ struct efa_io_cdesc_common {
 	 * 2:1 : q_type - enum efa_io_queue_type: send/recv
 	 * 3 : has_imm - indicates that immediate data is
 	 *    present - for RX completions only
-	 * 4 : wide_completion - indicates that wide
-	 *    completion format is used
-	 * 7:5 : reserved29
+	 * 7:4 : reserved28 - MBZ
 	 */
 	uint8_t flags;
 
@@ -260,75 +251,39 @@ struct efa_io_rx_cdesc {
 };
 
 /* Extended Rx Completion Descriptor */
-struct efa_io_rx_cdesc_wide {
+struct efa_io_rx_cdesc_ex {
 	/* Base RX completion info */
 	struct efa_io_rx_cdesc rx_cdesc_base;
 
 	/*
-	 * Word 0 of remote (source) address, needed only for in-band
-	 * ad-hoc AH support
+	 * Valid only in case of unknown AH (0xFFFF) and CQ set_src_addr is
+	 * enabled.
 	 */
-	uint32_t src_addr_0;
-
-	/*
-	 * Word 1 of remote (source) address, needed only for in-band
-	 * ad-hoc AH support
-	 */
-	uint32_t src_addr_1;
-
-	/*
-	 * Word 2 of remote (source) address, needed only for in-band
-	 * ad-hoc AH support
-	 */
-	uint32_t src_addr_2;
-
-	/*
-	 * Word 3 of remote (source) address, needed only for in-band
-	 * ad-hoc AH support
-	 */
-	uint32_t src_addr_3;
+	uint8_t src_addr[16];
 };
 
 /* tx_meta_desc */
-#define EFA_IO_TX_META_DESC_OP_TYPE_SHIFT                   0
 #define EFA_IO_TX_META_DESC_OP_TYPE_MASK                    GENMASK(3, 0)
-#define EFA_IO_TX_META_DESC_HAS_IMM_SHIFT                   4
 #define EFA_IO_TX_META_DESC_HAS_IMM_MASK                    BIT(4)
-#define EFA_IO_TX_META_DESC_INLINE_MSG_SHIFT                5
 #define EFA_IO_TX_META_DESC_INLINE_MSG_MASK                 BIT(5)
-#define EFA_IO_TX_META_DESC_META_EXTENSION_SHIFT            6
 #define EFA_IO_TX_META_DESC_META_EXTENSION_MASK             BIT(6)
-#define EFA_IO_TX_META_DESC_META_DESC_SHIFT                 7
 #define EFA_IO_TX_META_DESC_META_DESC_MASK                  BIT(7)
-#define EFA_IO_TX_META_DESC_PHASE_SHIFT                     0
 #define EFA_IO_TX_META_DESC_PHASE_MASK                      BIT(0)
-#define EFA_IO_TX_META_DESC_FIRST_SHIFT                     2
 #define EFA_IO_TX_META_DESC_FIRST_MASK                      BIT(2)
-#define EFA_IO_TX_META_DESC_LAST_SHIFT                      3
 #define EFA_IO_TX_META_DESC_LAST_MASK                       BIT(3)
-#define EFA_IO_TX_META_DESC_COMP_REQ_SHIFT                  4
 #define EFA_IO_TX_META_DESC_COMP_REQ_MASK                   BIT(4)
 
 /* tx_buf_desc */
-#define EFA_IO_TX_BUF_DESC_LKEY_SHIFT                       0
 #define EFA_IO_TX_BUF_DESC_LKEY_MASK                        GENMASK(23, 0)
 
 /* rx_desc */
-#define EFA_IO_RX_DESC_LKEY_SHIFT                           0
 #define EFA_IO_RX_DESC_LKEY_MASK                            GENMASK(23, 0)
-#define EFA_IO_RX_DESC_FIRST_SHIFT                          30
 #define EFA_IO_RX_DESC_FIRST_MASK                           BIT(30)
-#define EFA_IO_RX_DESC_LAST_SHIFT                           31
 #define EFA_IO_RX_DESC_LAST_MASK                            BIT(31)
 
 /* cdesc_common */
-#define EFA_IO_CDESC_COMMON_PHASE_SHIFT                     0
 #define EFA_IO_CDESC_COMMON_PHASE_MASK                      BIT(0)
-#define EFA_IO_CDESC_COMMON_Q_TYPE_SHIFT                    1
 #define EFA_IO_CDESC_COMMON_Q_TYPE_MASK                     GENMASK(2, 1)
-#define EFA_IO_CDESC_COMMON_HAS_IMM_SHIFT                   3
 #define EFA_IO_CDESC_COMMON_HAS_IMM_MASK                    BIT(3)
-#define EFA_IO_CDESC_COMMON_WIDE_COMPLETION_SHIFT           4
-#define EFA_IO_CDESC_COMMON_WIDE_COMPLETION_MASK            BIT(4)
 
 #endif /* _EFA_IO_H_ */
