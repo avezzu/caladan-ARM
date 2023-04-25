@@ -39,7 +39,7 @@
 
 #define QUEUE_SIZE		128
 #define SIGNAL_PER_DIV_QUEUE	16
-#define TH_NUMS_TO_DRAIN	2
+#define TH_NUMS_TO_DRAIN	16
 
 enum {
 	CQ_OK = 0,
@@ -747,7 +747,7 @@ static void dr_fill_data_segs(struct mlx5dv_dr_domain *dmn,
 		dr_fill_write_args_segs(send_ring, send_info);
 }
 
-static int dr_postsend_icm_data(struct mlx5dv_dr_domain *dmn,
+int dr_postsend_icm_data_unlocked(struct mlx5dv_dr_domain *dmn,
 				struct postsend_info *send_info,
 				int ring_idx)
 {
@@ -765,6 +765,31 @@ static int dr_postsend_icm_data(struct mlx5dv_dr_domain *dmn,
 
 out_unlock:
 	pthread_spin_unlock(&send_ring->lock);
+	return ret;
+}
+
+void postsend_lock(struct mlx5dv_dr_domain *dmn)
+{
+	while (__sync_lock_test_and_set(&dmn->spinlock, 1)) {
+		while (dmn->spinlock)
+			asm volatile("pause");
+	}
+}
+
+void postsend_unlock(struct mlx5dv_dr_domain *dmn)
+{
+	__sync_lock_release(&dmn->spinlock);
+}
+
+static int dr_postsend_icm_data(struct mlx5dv_dr_domain *dmn,
+				struct postsend_info *send_info, int ring_idx)
+{
+	int ret;
+
+	postsend_lock(dmn);
+	ret = dr_postsend_icm_data_unlocked(dmn, send_info, ring_idx);
+	postsend_unlock(dmn);
+
 	return ret;
 }
 
@@ -822,7 +847,7 @@ int dr_send_postsend_ste(struct mlx5dv_dr_domain *dmn, struct dr_ste *ste,
 	send_info.write.length  = size;
 	send_info.write.lkey    = 0;
 	send_info.remote_addr   = dr_ste_get_mr_addr(ste) + offset;
-	send_info.rkey          = dr_icm_pool_get_chunk_rkey(ste->htbl->chunk);
+	send_info.rkey          = ste->htbl->chunk->rkey;
 
 	return dr_postsend_icm_data(dmn, &send_info, ring_idx);
 }
@@ -876,7 +901,7 @@ int dr_send_postsend_htbl(struct mlx5dv_dr_domain *dmn, struct dr_ste_htbl *htbl
 		send_info.write.length	= byte_size;
 		send_info.write.lkey	= 0;
 		send_info.remote_addr	= dr_ste_get_mr_addr(htbl->ste_arr + ste_index);
-		send_info.rkey		= dr_icm_pool_get_chunk_rkey(htbl->chunk);
+		send_info.rkey		= htbl->chunk->rkey;
 
 		ret = dr_postsend_icm_data(dmn, &send_info, send_ring_idx);
 		if (ret)
@@ -930,7 +955,7 @@ int dr_send_postsend_formated_htbl(struct mlx5dv_dr_domain *dmn,
 		send_info.write.length	= byte_size;
 		send_info.write.lkey	= 0;
 		send_info.remote_addr	= dr_ste_get_mr_addr(htbl->ste_arr + ste_index);
-		send_info.rkey		= dr_icm_pool_get_chunk_rkey(htbl->chunk);
+		send_info.rkey		= htbl->chunk->rkey;
 
 		ret = dr_postsend_icm_data(dmn, &send_info, send_ring_idx);
 		if (ret)
@@ -955,8 +980,8 @@ int dr_send_postsend_action(struct mlx5dv_dr_domain *dmn,
 	send_info.write.length	= action->rewrite.param.num_of_actions *
 				  DR_MODIFY_ACTION_SIZE;
 	send_info.write.lkey	= 0;
-	send_info.remote_addr	= dr_icm_pool_get_chunk_mr_addr(action->rewrite.param.chunk);
-	send_info.rkey		= dr_icm_pool_get_chunk_rkey(action->rewrite.param.chunk);
+	send_info.remote_addr	= action->rewrite.param.chunk->mr_addr;
+	send_info.rkey		= action->rewrite.param.chunk->rkey;
 
 	/* To avoid race between action creation and its use in other QP
 	 * write it in all QP's.
@@ -983,8 +1008,8 @@ int dr_send_postsend_pattern(struct mlx5dv_dr_domain *dmn,
 
 	send_info.write.addr = (uintptr_t)data;
 	send_info.write.length = num_of_actions * DR_MODIFY_ACTION_SIZE;
-	send_info.remote_addr = dr_icm_pool_get_chunk_mr_addr(chunk);
-	send_info.rkey = dr_icm_pool_get_chunk_rkey(chunk);
+	send_info.remote_addr = chunk->mr_addr;
+	send_info.rkey = chunk->rkey;
 
 	/* To avoid race between action creation and its use in other QP
 	 * write it in all QP's.

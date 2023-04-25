@@ -37,7 +37,6 @@
 #define SRP_DM_H
 
 #include <stdint.h>
-#include <stdbool.h>
 #include <signal.h>
 #include <endian.h>
 #include <util/util.h>
@@ -248,7 +247,6 @@ enum {
 
 struct sync_resources {
 	int stop_threads;
-	bool error;
 	int next_task;
 	struct timespec next_recalc_time;
 	struct {
@@ -270,6 +268,7 @@ struct resources {
 	pthread_t trap_thread;
 	pthread_t async_ev_thread;
 	pthread_t reconnect_thread;
+	pthread_t timer_thread;
 };
 
 struct srp_ib_user_mad {
@@ -316,7 +315,6 @@ int pop_from_list(struct sync_resources *res, uint16_t *lid,
 		  union umad_gid *gid, uint16_t *pkey);
 int sync_resources_init(struct sync_resources *res);
 void sync_resources_cleanup(struct sync_resources *res);
-bool sync_resources_error(struct sync_resources *res);
 int modify_qp_to_err(struct ibv_qp *qp);
 void srp_sleep(time_t sec, time_t usec);
 void wake_up_main_loop(char ch);
@@ -324,6 +322,5 @@ void __schedule_rescan(struct sync_resources *res, int when);
 void schedule_rescan(struct sync_resources *res, int when);
 int __rescan_scheduled(struct sync_resources *res);
 int rescan_scheduled(struct sync_resources *res);
-void raise_catastrophic_error(struct sync_resources *res);
 
 #endif /* SRP_DM_H */

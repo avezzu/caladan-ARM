@@ -391,6 +391,13 @@ static bool dr_ste_v1_is_match_ste(uint16_t lu_type)
 	return ((lu_type >> 8) == DR_STE_V1_TYPE_MATCH);
 }
 
+static uint64_t dr_ste_v1_get_hit_addr(uint8_t *hw_ste_p)
+{
+	uint64_t index = DR_STE_GET(match_bwc_v1, hw_ste_p, next_table_base_31_5_size) |
+			DR_STE_GET(match_bwc_v1, hw_ste_p, next_table_base_39_32_size) << 27;
+	return index;
+}
+
 static void dr_ste_v1_init(uint8_t *hw_ste_p, uint16_t lu_type,
 			   bool is_rx, uint16_t gvmi)
 {
@@ -2397,27 +2404,6 @@ static void dr_ste_v1_build_tunnel_header_init(struct dr_ste_build *sb,
 	sb->ste_build_tag_func = &dr_ste_v1_build_tunnel_header_tag;
 }
 
-static int dr_ste_v1_build_ib_l4_tag(struct dr_match_param *value,
-				     struct dr_ste_build *sb,
-				     uint8_t *tag)
-{
-	struct  dr_match_misc *misc = &value->misc;
-
-	DR_STE_SET_TAG(ib_l4, tag, opcode, misc, bth_opcode);
-	DR_STE_SET_TAG(ib_l4, tag, qp, misc, bth_dst_qp);
-
-	return 0;
-}
-
-static void dr_ste_v1_build_ib_l4_init(struct dr_ste_build *sb,
-				       struct dr_match_param *mask)
-{
-	sb->lu_type = DR_STE_V1_LU_TYPE_IBL4;
-	dr_ste_v1_build_ib_l4_tag(mask, sb, sb->bit_mask);
-	sb->byte_mask = dr_ste_conv_bit_to_byte_mask(sb->bit_mask);
-	sb->ste_build_tag_func = &dr_ste_v1_build_ib_l4_tag;
-}
-
 static int dr_ste_v1_build_def0_tag(struct dr_match_param *value,
 				    struct dr_ste_build *sb,
 				    uint8_t *tag)
@@ -3591,7 +3577,6 @@ static struct dr_ste_ctx ste_ctx_v1 = {
 	.build_flex_parser_0_init	= &dr_ste_v1_build_flex_parser_0_init,
 	.build_flex_parser_1_init	= &dr_ste_v1_build_flex_parser_1_init,
 	.build_tunnel_header_init	= &dr_ste_v1_build_tunnel_header_init,
-	.build_ib_l4_init		= &dr_ste_v1_build_ib_l4_init,
 	.build_def0_init		= &dr_ste_v1_build_def0_init,
 	.build_def2_init		= &dr_ste_v1_build_def2_init,
 	.build_def6_init		= &dr_ste_v1_build_def6_init,
@@ -3611,6 +3596,7 @@ static struct dr_ste_ctx ste_ctx_v1 = {
 	.set_miss_addr			= &dr_ste_v1_set_miss_addr,
 	.get_miss_addr			= &dr_ste_v1_get_miss_addr,
 	.set_hit_addr			= &dr_ste_v1_set_hit_addr,
+	.get_hit_addr 			= &dr_ste_v1_get_hit_addr,
 	.set_byte_mask			= &dr_ste_v1_set_byte_mask,
 	.get_byte_mask			= &dr_ste_v1_get_byte_mask,
 	.set_ctrl_always_hit_htbl	= &dr_ste_v1_set_ctrl_always_hit_htbl,

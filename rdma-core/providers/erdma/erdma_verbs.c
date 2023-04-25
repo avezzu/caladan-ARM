@@ -185,13 +185,6 @@ struct ibv_cq *erdma_create_cq(struct ibv_context *ctx, int num_cqe,
 		return NULL;
 	}
 
-	rv = ibv_dontfork_range(cq->queue, cq_size);
-	if (rv) {
-		free(cq->queue);
-		cq->queue = NULL;
-		goto error_alloc;
-	}
-
 	memset(cq->queue, 0, cq_size);
 
 	db_records = erdma_alloc_dbrecords(ectx);
@@ -233,10 +226,8 @@ error_alloc:
 	if (db_records)
 		erdma_dealloc_dbrecords(ectx, db_records);
 
-	if (cq->queue) {
-		ibv_dofork_range(cq->queue, cq_size);
+	if (cq->queue)
 		free(cq->queue);
-	}
 
 	free(cq);
 
@@ -261,10 +252,8 @@ int erdma_destroy_cq(struct ibv_cq *base_cq)
 	if (cq->db_record)
 		erdma_dealloc_dbrecords(ctx, cq->db_record);
 
-	if (cq->queue) {
-		ibv_dofork_range(cq->queue, cq->depth << CQE_SHIFT);
+	if (cq->queue)
 		free(cq->queue);
-	}
 
 	free(cq);
 
@@ -288,10 +277,47 @@ static void __erdma_alloc_dbs(struct erdma_qp *qp, struct erdma_context *ctx)
 		    (qpn & ERDMA_RDB_ALLOC_QPN_MASK) * ERDMA_RQDB_SPACE_SIZE;
 }
 
-static int erdma_store_qp(struct erdma_context *ctx, struct erdma_qp *qp)
+struct ibv_qp *erdma_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 {
-	uint32_t tbl_idx, tbl_off;
-	int rv = 0;
+	struct erdma_context *ctx = to_ectx(pd->context);
+	struct erdma_cmd_create_qp_resp resp = {};
+	struct erdma_cmd_create_qp cmd = {};
+	uint32_t tbl_idx, tbl_off, nwqebb;
+	uint64_t *db_records = NULL;
+	struct erdma_qp *qp;
+	size_t queue_size;
+	int rv;
+
+	qp = calloc(1, sizeof(*qp));
+	if (!qp)
+		return NULL;
+
+	nwqebb = roundup_pow_of_two(attr->cap.max_send_wr * MAX_WQEBB_PER_SQE);
+	queue_size = align(nwqebb << SQEBB_SHIFT, ctx->page_size);
+	nwqebb = roundup_pow_of_two(attr->cap.max_recv_wr);
+	queue_size += align(nwqebb << RQE_SHIFT, ctx->page_size);
+	rv = posix_memalign(&qp->qbuf, ctx->page_size, queue_size);
+	if (rv) {
+		errno = rv;
+		goto error_alloc;
+	}
+
+	db_records = erdma_alloc_dbrecords(ctx);
+	if (!db_records) {
+		errno = ENOMEM;
+		goto error_alloc;
+	}
+
+	cmd.db_record_va = (uintptr_t)db_records;
+	cmd.qbuf_va = (uintptr_t)qp->qbuf;
+	cmd.qbuf_len = (__u32)queue_size;
+
+	rv = ibv_cmd_create_qp(pd, &qp->base_qp, attr, &cmd.ibv_cmd,
+			       sizeof(cmd), &resp.ibv_resp, sizeof(resp));
+	if (rv)
+		goto error_alloc;
+
+	qp->id = resp.qp_id;
 
 	pthread_mutex_lock(&ctx->qp_table_mutex);
 	tbl_idx = qp->id >> ERDMA_QP_TABLE_SHIFT;
@@ -301,157 +327,21 @@ static int erdma_store_qp(struct erdma_context *ctx, struct erdma_qp *qp)
 		ctx->qp_table[tbl_idx].table =
 			calloc(ERDMA_QP_TABLE_SIZE, sizeof(struct erdma_qp *));
 		if (!ctx->qp_table[tbl_idx].table) {
-			rv = -ENOMEM;
-			goto out;
+			errno = ENOMEM;
+			goto fail;
 		}
 	}
 
 	/* exist qp */
 	if (ctx->qp_table[tbl_idx].table[tbl_off]) {
-		rv = -EBUSY;
-		goto out;
+		errno = EBUSY;
+		goto fail;
 	}
 
 	ctx->qp_table[tbl_idx].table[tbl_off] = qp;
 	ctx->qp_table[tbl_idx].refcnt++;
-
-out:
 	pthread_mutex_unlock(&ctx->qp_table_mutex);
 
-	return rv;
-}
-
-static void erdma_clear_qp(struct erdma_context *ctx, struct erdma_qp *qp)
-{
-	uint32_t tbl_idx, tbl_off;
-
-	pthread_mutex_lock(&ctx->qp_table_mutex);
-	tbl_idx = qp->id >> ERDMA_QP_TABLE_SHIFT;
-	tbl_off = qp->id & ERDMA_QP_TABLE_MASK;
-
-	ctx->qp_table[tbl_idx].table[tbl_off] = NULL;
-	ctx->qp_table[tbl_idx].refcnt--;
-
-	if (ctx->qp_table[tbl_idx].refcnt == 0) {
-		free(ctx->qp_table[tbl_idx].table);
-		ctx->qp_table[tbl_idx].table = NULL;
-	}
-
-	pthread_mutex_unlock(&ctx->qp_table_mutex);
-}
-
-static int erdma_alloc_qp_buf_and_db(struct erdma_context *ctx,
-				     struct erdma_qp *qp,
-				     struct ibv_qp_init_attr *attr)
-{
-	size_t queue_size;
-	uint32_t nwqebb;
-	int rv;
-
-	nwqebb = roundup_pow_of_two(attr->cap.max_send_wr * MAX_WQEBB_PER_SQE);
-	queue_size = align(nwqebb << SQEBB_SHIFT, ctx->page_size);
-	nwqebb = roundup_pow_of_two(attr->cap.max_recv_wr);
-	queue_size += align(nwqebb << RQE_SHIFT, ctx->page_size);
-
-	qp->qbuf_size = queue_size;
-	rv = posix_memalign(&qp->qbuf, ctx->page_size, queue_size);
-	if (rv) {
-		errno = ENOMEM;
-		return -1;
-	}
-
-	rv = ibv_dontfork_range(qp->qbuf, queue_size);
-	if (rv) {
-		errno = rv;
-		goto err_dontfork;
-	}
-
-	/* doorbell record allocation. */
-	qp->db_records = erdma_alloc_dbrecords(ctx);
-	if (!qp->db_records) {
-		errno = ENOMEM;
-		goto err_dbrec;
-	}
-
-	*qp->db_records = 0;
-	*(qp->db_records + 1) = 0;
-	qp->sq.db_record = qp->db_records;
-	qp->rq.db_record = qp->db_records + 1;
-
-	pthread_spin_init(&qp->sq_lock, PTHREAD_PROCESS_PRIVATE);
-	pthread_spin_init(&qp->rq_lock, PTHREAD_PROCESS_PRIVATE);
-
-	return 0;
-
-err_dbrec:
-	ibv_dofork_range(qp->qbuf, queue_size);
-
-err_dontfork:
-	free(qp->qbuf);
-
-	return -1;
-}
-
-static void erdma_free_qp_buf_and_db(struct erdma_context *ctx,
-				     struct erdma_qp *qp)
-{
-	pthread_spin_destroy(&qp->sq_lock);
-	pthread_spin_destroy(&qp->rq_lock);
-
-	if (qp->db_records)
-		erdma_dealloc_dbrecords(ctx, qp->db_records);
-
-	ibv_dofork_range(qp->qbuf, qp->qbuf_size);
-	free(qp->qbuf);
-}
-
-static int erdma_alloc_wrid_tbl(struct erdma_qp *qp)
-{
-	qp->rq.wr_tbl = calloc(qp->rq.depth, sizeof(uint64_t));
-	if (!qp->rq.wr_tbl)
-		return -ENOMEM;
-
-	qp->sq.wr_tbl = calloc(qp->sq.depth, sizeof(uint64_t));
-	if (!qp->sq.wr_tbl) {
-		free(qp->rq.wr_tbl);
-		return -ENOMEM;
-	}
-
-	return 0;
-}
-
-static void erdma_free_wrid_tbl(struct erdma_qp *qp)
-{
-	free(qp->sq.wr_tbl);
-	free(qp->rq.wr_tbl);
-}
-
-struct ibv_qp *erdma_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
-{
-	struct erdma_context *ctx = to_ectx(pd->context);
-	struct erdma_cmd_create_qp_resp resp = {};
-	struct erdma_cmd_create_qp cmd = {};
-	struct erdma_qp *qp;
-	int rv;
-
-	qp = calloc(1, sizeof(*qp));
-	if (!qp)
-		return NULL;
-
-	rv = erdma_alloc_qp_buf_and_db(ctx, qp, attr);
-	if (rv)
-		goto err;
-
-	cmd.db_record_va = (uintptr_t)qp->db_records;
-	cmd.qbuf_va = (uintptr_t)qp->qbuf;
-	cmd.qbuf_len = (__u32)qp->qbuf_size;
-
-	rv = ibv_cmd_create_qp(pd, &qp->base_qp, attr, &cmd.ibv_cmd,
-			       sizeof(cmd), &resp.ibv_resp, sizeof(resp));
-	if (rv)
-		goto err_cmd;
-
-	qp->id = resp.qp_id;
 	qp->sq.qbuf = qp->qbuf;
 	qp->rq.qbuf = qp->qbuf + resp.rq_offset;
 	qp->sq.depth = resp.num_sqe;
@@ -463,25 +353,40 @@ struct ibv_qp *erdma_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 	/* doorbell allocation. */
 	__erdma_alloc_dbs(qp, ctx);
 
-	rv = erdma_alloc_wrid_tbl(qp);
-	if (rv)
-		goto err_wrid_tbl;
+	pthread_spin_init(&qp->sq_lock, PTHREAD_PROCESS_PRIVATE);
+	pthread_spin_init(&qp->rq_lock, PTHREAD_PROCESS_PRIVATE);
 
-	rv = erdma_store_qp(ctx, qp);
-	if (rv) {
-		errno = -rv;
-		goto err_store;
-	}
+	*db_records = 0;
+	*(db_records + 1) = 0;
+	qp->db_records = db_records;
+	qp->sq.db_record = db_records;
+	qp->rq.db_record = db_records + 1;
+
+	qp->rq.wr_tbl = calloc(qp->rq.depth, sizeof(uint64_t));
+	if (!qp->rq.wr_tbl)
+		goto fail;
+
+	qp->sq.wr_tbl = calloc(qp->sq.depth, sizeof(uint64_t));
+	if (!qp->sq.wr_tbl)
+		goto fail;
 
 	return &qp->base_qp;
+fail:
+	if (qp->sq.wr_tbl)
+		free(qp->sq.wr_tbl);
 
-err_store:
-	erdma_free_wrid_tbl(qp);
-err_wrid_tbl:
+	if (qp->rq.wr_tbl)
+		free(qp->rq.wr_tbl);
+
 	ibv_cmd_destroy_qp(&qp->base_qp);
-err_cmd:
-	erdma_free_qp_buf_and_db(ctx, qp);
-err:
+
+error_alloc:
+	if (db_records)
+		erdma_dealloc_dbrecords(ctx, db_records);
+
+	if (qp->qbuf)
+		free(qp->qbuf);
+
 	free(qp);
 
 	return NULL;
@@ -510,16 +415,41 @@ int erdma_destroy_qp(struct ibv_qp *base_qp)
 	struct ibv_context *base_ctx = base_qp->pd->context;
 	struct erdma_context *ctx = to_ectx(base_ctx);
 	struct erdma_qp *qp = to_eqp(base_qp);
+	uint32_t tbl_idx, tbl_off;
 	int rv;
 
-	erdma_clear_qp(ctx, qp);
+	pthread_mutex_lock(&ctx->qp_table_mutex);
+	tbl_idx = qp->id >> ERDMA_QP_TABLE_SHIFT;
+	tbl_off = qp->id & ERDMA_QP_TABLE_MASK;
+
+	ctx->qp_table[tbl_idx].table[tbl_off] = NULL;
+	ctx->qp_table[tbl_idx].refcnt--;
+
+	if (ctx->qp_table[tbl_idx].refcnt == 0) {
+		free(ctx->qp_table[tbl_idx].table);
+		ctx->qp_table[tbl_idx].table = NULL;
+	}
+
+	pthread_mutex_unlock(&ctx->qp_table_mutex);
 
 	rv = ibv_cmd_destroy_qp(base_qp);
 	if (rv)
 		return rv;
 
-	erdma_free_wrid_tbl(qp);
-	erdma_free_qp_buf_and_db(ctx, qp);
+	pthread_spin_destroy(&qp->rq_lock);
+	pthread_spin_destroy(&qp->sq_lock);
+
+	if (qp->sq.wr_tbl)
+		free(qp->sq.wr_tbl);
+
+	if (qp->rq.wr_tbl)
+		free(qp->rq.wr_tbl);
+
+	if (qp->db_records)
+		erdma_dealloc_dbrecords(ctx, qp->db_records);
+
+	if (qp->qbuf)
+		free(qp->qbuf);
 
 	free(qp);
 

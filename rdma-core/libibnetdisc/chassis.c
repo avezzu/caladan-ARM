@@ -597,7 +597,7 @@ static int fill_mellanox_chassis_record(ibnd_node_t * node)
 	int p = 0;
 	ibnd_port_t *port;
 
-	char node_desc[IB_SMP_DATA_SIZE + 1];
+	char node_desc[IB_SMP_DATA_SIZE];
 	char *system_name;
 	char *system_type;
 	char *system_slot_name;
@@ -617,7 +617,6 @@ static int fill_mellanox_chassis_record(ibnd_node_t * node)
 	 */
 
 	memcpy(node_desc, node->nodedesc, IB_SMP_DATA_SIZE);
-	node_desc[IB_SMP_DATA_SIZE] = '\0';
 
 	IBND_DEBUG("fill_mellanox_chassis_record: node_desc:%s \n",node_desc);
 

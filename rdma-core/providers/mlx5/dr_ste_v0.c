@@ -341,6 +341,15 @@ static void dr_ste_v0_init_full(uint8_t *hw_ste_p, uint16_t lu_type,
 	DR_STE_SET(rx_steering_mult, hw_ste_p, miss_address_63_48, gvmi);
 }
 
+static uint64_t dr_ste_v0_get_hit_addr(uint8_t *hw_ste_p)
+{
+	uint64_t index = DR_STE_GET(general, hw_ste_p, next_table_base_31_5_size) |
+			DR_STE_GET(general, hw_ste_p, next_table_base_39_32_size) << 27;
+
+	return index;
+
+}
+
 static void dr_ste_v0_init(uint8_t *hw_ste_p, uint16_t lu_type,
 			   bool is_rx, uint16_t gvmi)
 {
@@ -1908,6 +1917,7 @@ static struct dr_ste_ctx ste_ctx_v0 = {
 	.set_miss_addr			= &dr_ste_v0_set_miss_addr,
 	.get_miss_addr			= &dr_ste_v0_get_miss_addr,
 	.set_hit_addr			= &dr_ste_v0_set_hit_addr,
+	.get_hit_addr			= &dr_ste_v0_get_hit_addr,
 	.set_byte_mask			= &dr_ste_v0_set_byte_mask,
 	.get_byte_mask			= &dr_ste_v0_get_byte_mask,
 	.set_ctrl_always_hit_htbl	= &dr_ste_v0_set_ctrl_always_hit_htbl,

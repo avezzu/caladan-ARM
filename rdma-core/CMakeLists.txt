@@ -54,8 +54,8 @@
 #      directory are available.
 
 if (${CMAKE_VERSION} VERSION_LESS "3.18.1")
-	# Centos 7 support
-	cmake_minimum_required(VERSION 2.8.12 FATAL_ERROR)
+	# Centos 6 support
+	cmake_minimum_required(VERSION 2.8.11 FATAL_ERROR)
 else()
 	cmake_minimum_required(VERSION 3.18.1 FATAL_ERROR)
 endif()
@@ -77,7 +77,7 @@ endif()
 set(PACKAGE_NAME "RDMA")
 
 # See Documentation/versioning.md
-set(PACKAGE_VERSION "46.0")
+set(PACKAGE_VERSION "44.0")
 # When this is changed the values in these files need changing too:
 #   debian/control
 #   debian/libibverbs1.symbols
