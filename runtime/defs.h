@@ -79,6 +79,17 @@ struct thread_tf {
 	/* special-purpose registers */
 	uint64_t pc;	/* instruction pointer */
 	uint64_t sp;	/* stack pointer */
+
+	/*additional register used with O3*/
+	uint64_t x20;
+	uint64_t x21;
+	uint64_t x22;
+	uint64_t x23;
+	uint64_t x24;
+	uint64_t x25;
+	uint64_t x26;
+	uint64_t x27;
+	uint64_t x28;
 };
 
 #define ARG0(tf)        ((tf)->x0)
