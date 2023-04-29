@@ -772,7 +772,7 @@ void postsend_lock(struct mlx5dv_dr_domain *dmn)
 {
 	while (__sync_lock_test_and_set(&dmn->spinlock, 1)) {
 		while (dmn->spinlock)
-			asm volatile("pause");
+			asm volatile("yield");
 	}
 }
 
