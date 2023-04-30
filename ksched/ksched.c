@@ -230,6 +230,8 @@ static inline long get_granted_core_id(void)
 		 * the iokernel. In this case no core was granted. We should
 		 * put the thread back into sleep immediately after handling
 		 * the signal. */
+	  printk(KERN_INFO "p == NULL, %d", p->running_task == NULL);
+	  printk(KERN_INFO "error happened in get_granted_core_id");
 		return -ERESTARTSYS;
 	}
 
@@ -300,7 +302,11 @@ static long ksched_start(void)
 	/* put this task to sleep and reschedule so the next task can run */
 	__set_current_state(TASK_INTERRUPTIBLE);
 	mark_task_parked(current);
+	printk(KERN_INFO "calling schedule");
+	printk(KERN_INFO "calling schedule");
 	schedule();
+	printk(KERN_INFO "returned from schedule");
+	printk(KERN_INFO "returned from schedule");
 	__set_current_state(TASK_RUNNING);
 	return get_granted_core_id();
 }
@@ -315,6 +321,14 @@ static void ksched_deliver_signal(struct ksched_percpu *p, unsigned int signum)
 		send_sig(signum, p->running_task, 0);
 }
 
+
+//not sure if this is correct
+unsigned long long rdtsc_tmp(void)
+{
+    unsigned long long val;
+    asm volatile("mrs %0, CNTVCT_EL0" : "=r" (val));
+    return val;
+}
 
 static void ksched_ipi(void *unused)
 {
@@ -445,45 +459,6 @@ static struct cpuidle_driver ksched_driver = {
     .state_count = 1,
 };
 
-/* TODO: This is a total hack to make ksched work as a module */
-static struct cpuidle_state backup_state;
-static int backup_state_count;
-
-static int __init ksched_cpuidle_hijack(void)
-{
-	struct cpuidle_driver *drv;
-
-	drv = cpuidle_get_driver();
-	if (!drv)
-		printk("failed cpuidle_get_driver");
-		return -1;
-	if (drv->state_count <= 0)
-		return -EINVAL;
-
-	cpuidle_pause_and_lock();
-	backup_state = drv->states[0];
-	backup_state_count = drv->state_count;
-	drv->states[0].enter = ksched_idle;
-	drv->state_count = 1;
-	cpuidle_resume_and_unlock();
-
-	return 0;
-}
-
-static void __exit ksched_cpuidle_unhijack(void)
-{
-	struct cpuidle_driver *drv;
-
-	drv = cpuidle_get_driver();
-	if (!drv)
-		return;
-
-	cpuidle_pause_and_lock();
-	drv->states[0] = backup_state;
-	drv->state_count = backup_state_count;
-	cpuidle_resume_and_unlock();
-}
-
 
 static int __init ksched_init(void)
 {
@@ -506,15 +481,14 @@ static int __init ksched_init(void)
 	}
 	memset(shm, 0, SHM_SIZE);
 
-	ret = ksched_cpuidle_hijack();
+	ret = cpuidle_register_driver(&ksched_driver);
 	if (ret)
-		goto fail_hijack;
-
+		goto reg_driver;
 
 	printk(KERN_INFO "ksched: API ported V2 enabled");
 	return 0;
 
-fail_hijack:
+reg_driver:
 	vfree(shm);
 fail_shm:
 	cdev_del(&ksched_cdev);
@@ -530,12 +504,12 @@ static void __exit ksched_exit(void)
 
 	dev_t devno_ksched = MKDEV(KSCHED_MAJOR, KSCHED_MINOR);
 
-	ksched_cpuidle_unhijack();
+	cpuidle_unregister_driver(&ksched_driver);
      
 	vfree(shm);
 	cdev_del(&ksched_cdev);
 	unregister_chrdev_region(devno_ksched, 1);
-	
+
 	for_each_online_cpu(cpu) {
 		p = per_cpu_ptr(&kp, cpu);
 		if (p->running_task)
