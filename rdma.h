@@ -1,22 +1,6 @@
 #ifndef RDMA_H__
 #define RDMA_H__
-/*
- * BUILD COMMAND:
- * gcc -Wall -I/usr/local/ofed/include -O2 -o rdma_rc_example -L/usr/local/ofed/lib64 -L/usr/local/ofed/lib -libverbs rdma_rc_example.c
- *
- */
-/******************************************************************************
- *
- * RDMA Aware Networks Programming Example
- *
- * This code demonstrates how to perform the following operations using the * VPI Verbs API:
- *
- * Send
- * Receive
- * RDMA Read
- * RDMA Write
- *
- *****************************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
