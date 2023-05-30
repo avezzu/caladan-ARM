@@ -891,7 +891,7 @@ connect_qp (struct resources *res)
         fprintf (stderr, "failed to modify QP state to RTR\n");
         goto connect_qp_exit;
     }
-    fprintf (stderr, "Modified QP state to RTR\n");
+    fprintf (stdout, "Modified QP state to RTR\n");
     rc = modify_qp_to_rts (res->qp);
     if (rc)
     {
