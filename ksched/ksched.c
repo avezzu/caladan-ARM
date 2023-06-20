@@ -460,9 +460,9 @@ static struct cpuidle_driver ksched_driver = {
 };
 
 
-/*************************************************************************************************
-THIS MODULE CANNOT BE USED! It was left in caladan anyway for future work with the ported version.
-**************************************************************************************************/
+/******************************************************************************************************
+THIS MODULE CANNOT BE USED FULLY! It was left in caladan anyway for future work with the ported version.
+*******************************************************************************************************/
 
 static int __init ksched_init(void)
 {

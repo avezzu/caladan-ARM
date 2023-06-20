@@ -24,19 +24,9 @@ static void main_handler(void *arg)
 
 	for (i = 0; i < N_PINGS; i++) {
 		net_send_ping(i, DEST_IP_ADDR);
-
 		/* wait 1 second before sending next ping */
 		timer_sleep(1000*1000);
 	}
-}
-
-static void handler(void *arg)
-{
-  log_info("hello from process");
-  //FILE *f = fopen("//home//ubuntu//caladan-aarch64//tests//text.txt", "w");
-  //fprintf(f, "Hello World!");
-  //fclose(f);
-  return;
 }
 
 

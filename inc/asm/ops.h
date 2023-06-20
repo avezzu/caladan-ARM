@@ -19,11 +19,11 @@ static inline void cpu_relax(void)
 #endif
 }
 
+
+//this struct is never used
 struct cpuid_info {
 	unsigned int eax, ebx, ecx, edx;
 };
-
-
 
 static inline uint64_t rdtsc(void)
 {
@@ -48,12 +48,6 @@ static inline uint64_t rdtscp(uint32_t *auxp)
 	ret = __builtin_ia32_rdtscp(&c);
 #  endif
 #else
-	/*asm volatile (  
-        "mrs %1, tpidr_el1\n\t"    
-        :"=r" (c)   
-        :                          
-        : "memory"                
-    	);*/
   	asm volatile("mrs %0, CNTVCT_EL0" : "=r" (ret));
 #endif
 

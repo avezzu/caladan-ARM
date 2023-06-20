@@ -1037,23 +1037,23 @@ void read_buffer(struct resources* res){
     }
 }
 
+// for the first send, just use post_send(res, IBV_WR_RDMA_WRITE)
 void send_result(struct resources* res, void* data, int data_size){
    
     /* Now the client performs an RDMA read and then write on server.
        Note that the server has no idea these events have occured */
     if (config.server_name)
-    {
-
+    {   
+        if (poll_completion(res))
+        {
+            fprintf(stderr, "poll completion failed 3\n");
+            return;
+        }
         /* Now we replace what's in the server's buffer */
         memcpy(res->buf, data, data_size);
         if (post_send(res, IBV_WR_RDMA_WRITE))
         {
             fprintf(stderr, "failed to post SR 3\n");
-            return;
-        }
-        if (poll_completion(res))
-        {
-            fprintf(stderr, "poll completion failed 3\n");
             return;
         }
     }

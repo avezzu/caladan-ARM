@@ -91,7 +91,13 @@ static __always_inline void kthread_yield_to_iokernel(void)
 	uint64_t last_core = k->curr_cpu;
 	ssize_t s = 3;
 
+
+	/***************
+	UNSUPPORTED PART
+	****************/
+	
 	/* yield to the iokernel */
+
 	/*
 	do {
 		clear_preempt_needed();
@@ -236,6 +242,11 @@ void kthread_wait_to_attach(void)
 {
 	struct kthread *k = myk();
 	int s = 3;
+
+	/***************
+	UNSUPPORTED PART
+	****************/
+
 	/*
 	do {
 	  
