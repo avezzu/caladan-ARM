@@ -293,8 +293,8 @@ poll_completion (struct resources *res)
     else
     {
         /* CQE found */
-        fprintf (stdout, "completion was found in CQ with status 0x%x\n",
-                wc.status);
+        /*fprintf (stdout, "completion was found in CQ with status 0x%x\n",
+                wc.status);*/
         /* check the completion status (here we don't care about the completion opcode */
         if (wc.status != IBV_WC_SUCCESS)
         {
@@ -360,10 +360,10 @@ post_send (struct resources *res, int opcode)
                 fprintf (stdout, "Send Request was posted\n");
                 break;
             case IBV_WR_RDMA_READ:
-                fprintf (stdout, "RDMA Read Request was posted\n");
+                //fprintf (stdout, "RDMA Read Request was posted\n");
                 break;
             case IBV_WR_RDMA_WRITE:
-                fprintf (stdout, "RDMA Write Request was posted\n");
+                //fprintf (stdout, "RDMA Write Request was posted\n");
                 break;
             default:
                 fprintf (stdout, "Unknown Request was posted\n");
