@@ -145,7 +145,7 @@ int main(int argc, char *argv[]){
 	uint32_t addr;
 	thread_fn_t fn;
 
-    if (argc < 5){
+    if (argc < 6){
         printf("arg must be: [config_file] [mode] [#buf_size] [#amount_clients] [#amount_workes]\n");
 		return -EINVAL;
     }
