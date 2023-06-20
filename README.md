@@ -2,11 +2,7 @@
 
 Caladan is a system that enables servers in datacenters to
 simultaneously provide low tail latency and high CPU efficiency, by
-rapidly reallocating cores across applications.
-
-### Contact
-
-For any questions about Caladan, please email <caladan@csail.mit.edu>.
+rapidly reallocating cores across applications. This version is a version specified for ARM processors. Not all functions of the original versions are supported.
 
 ## How to Run Caladan
 
@@ -35,3 +31,15 @@ make clean && make
 popd
 sudo ./scripts/setup_machine.sh
 ```
+
+5) Run Caladan with the following command. In case Caladan is not started on the Bluefield-2, the NIC-PCI address and the NUMA node may have to be adjusted.
+
+```
+./start_caladan.sh
+```
+
+## How to build RDMA application for Host
+```
+gcc rdma_host.c -o rdma_host -libverbs
+```
+
