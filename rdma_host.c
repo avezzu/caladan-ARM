@@ -19,7 +19,7 @@ int main(int argc, char *argv[]){
         setup_connection(0, "", &res[i], sizeof(uint64_t) * size);
     }
     
-    printf("Connection has been established. [Ctrl+C to quit]\n");
+    fprintf(stdout, "Connection has been established. [Ctrl+C to quit]\n");
     while(1);
 
     return 0;
