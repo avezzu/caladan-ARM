@@ -102,9 +102,8 @@ static void *read_from(void *connection)
         atomic64_add_and_fetch(&sum, local_sum);
     }
 
-    if (!atomic64_read(&done))
+    if (!(atomic64_add_and_fetch(&done, 1) - 1))
     {
-        atomic64_add_and_fetch(&done, 1);
         waitgroup_done(&wg);
     }
 
@@ -146,7 +145,7 @@ static void do_server(void *arg)
         thread_spawn(read_from, c);
     }
 
-    udp_read(c, &buf, buf_size * sizeof(int));
+    udp_read(c, buf, buf_size * sizeof(int));
     atomic64_add_and_fetch(&counter, 1);
 
     waitgroup_done(&start_threads);
