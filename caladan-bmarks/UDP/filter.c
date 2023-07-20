@@ -162,9 +162,9 @@ static void do_client(void *arg)
     srand(SEED);
     for (int i = 0; i < N; i++)
     {
-        for (int i = 0; i < KEY_SIZE / sizeof(uint32_t); i++)
+        for (int j = 0; j < KEY_SIZE / sizeof(uint32_t); j++)
         {
-            ((uint32_t *)buf)[i] = rand();
+            ((uint32_t *)buf)[j] = rand();
         }
         udp_write(c, buf, buf_size);
     }
