@@ -73,7 +73,7 @@ sudo ./caladan-bmarks/UDP/aggregate client.config client 1000 1 1
 
 Run host RDMA process (when using RDMA, always start this process first):
 ```
-./rdma_host <#threads>
+./rdma_host <#connections>
 ```
 
 ## Dealing with Failed Attempts
