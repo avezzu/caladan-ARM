@@ -36,7 +36,7 @@ popd
 sudo ./scripts/setup_machine.sh
 ```
 
-5) Run Caladan with the following command. In case Caladan is not started on the Bluefield-2, the NIC-PCI address and the NUMA node may have to be adjusted.
+5) Run Caladan with the following command. Depending on your hardware setup, the NIC-PCI address and the NUMA node may have to be adjusted.
 
 ```
 ./start_caladan.sh
