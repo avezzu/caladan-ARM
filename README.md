@@ -51,22 +51,22 @@ gcc rdma_host.c -o rdma_host -libverbs
 
 A default server and client configuration can already be found in the config files, which were also used for the benchmarks. Depending on the use case, you can adapt them accordingly.
 
-Run the server process:
+Run the server and client process:
 ```
 sudo ./<application> <param>
 ```
-e.g.
+for example for the server
+
 ```
 sudo ./caladan-bmarks/UDP/aggregate server.config server 1000 1 1
 ```
+and for the client
 
-
-Run the client process:
 ```
 sudo ./caladan-bmarks/UDP/aggregate client.config client 1000 1 1
 ```
 
-Run hos rdma process (when using rdma, always start this process first):
+Run host RDMA process (when using RDMA, always start this process first):
 ```
 ./rdma_host <#threads>
 ```
