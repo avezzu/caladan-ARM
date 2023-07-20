@@ -6,7 +6,7 @@ rapidly reallocating cores across applications. This version is a version specif
 
 ## Setup for Bluefield-2
 
-To run Caladan on the Bluefield-2, you need to configure tje Bluefield-2 in Separated Host Mode. Instructions on how to do this can be found [here](https://docs.nvidia.com/networking/display/BlueFieldSWv35111601/Modes+of+Operation). Depending on the configuration of the server and client, you may also need to adjust the MTU of the SmartNIC.
+To run Caladan on the Bluefield-2, you need to configure the Bluefield-2 in Separated Host Mode. Instructions on how to do this can be found [here](https://docs.nvidia.com/networking/display/BlueFieldSWv35111601/Modes+of+Operation). Depending on the configuration of the server and client, you may also need to adjust the MTU of the SmartNIC.
 
 ## How to Run Caladan
 
