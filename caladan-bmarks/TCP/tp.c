@@ -90,9 +90,8 @@ static void *read_from(void *connection)
 
     atomic64_cmpxchg_val(&end, 0, getTime());
 
-    if (!atomic64_read(&done))
+     if (!(atomic64_add_and_fetch(&done, 1) - 1))
     {
-        atomic64_add_and_fetch(&done, 1);
         waitgroup_done(&wg);
     }
 
