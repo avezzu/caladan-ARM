@@ -4,6 +4,10 @@ Caladan is a system that enables servers in datacenters to
 simultaneously provide low tail latency and high CPU efficiency, by
 rapidly reallocating cores across applications. This version is a version specified for ARM processors. Not all functions of the original versions are supported.
 
+## Setup for Bluefield-2
+
+To run Caladan on the Bluefield-2, you need to configure tje Bluefield-2 in Separated Host Mode. Instructions on how to do this can be found [here](https://docs.nvidia.com/networking/display/BlueFieldSWv35111601/Modes+of+Operation).
+
 ## How to Run Caladan
 
 1) Clone the Caladan repository.
@@ -41,5 +45,29 @@ sudo ./scripts/setup_machine.sh
 ## How to build RDMA application for Host
 ```
 gcc rdma_host.c -o rdma_host -libverbs
+```
+
+## How to run benchmarks
+
+A default server and client configuration can already be found in the config files, which were also used for the benchmarks. Depending on the use case, you can adapt them accordingly.
+
+Run the server process:
+```
+sudo ./<application> <param>
+```
+e.g.
+```
+sudo ./caladan-bmarks/UDP/aggregate server.config server 1000 1 1
+```
+
+
+Run the client process:
+```
+sudo ./caladan-bmarks/UDP/aggregate client.config client 1000 1 1
+```
+
+Run hos rdma process (when using rdma, always start this process first):
+```
+./rdma_host <#threads>
 ```
 
