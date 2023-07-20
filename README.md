@@ -60,7 +60,7 @@ Run the server and client process:
 ```
 sudo ./<application> <param>
 ```
-for example for the server
+For example for the server
 
 ```
 sudo ./caladan-bmarks/UDP/aggregate server.config server 1000 1 1
