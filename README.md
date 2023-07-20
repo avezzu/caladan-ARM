@@ -24,7 +24,12 @@ sudo apt install make gcc cmake pkg-config libnl-3-dev libnl-route-3-dev libnuma
 make submodules
 ```
 
-4) Build the scheduler (IOKernel), the Caladan runtime, and Ksched and perform some machine setup.
+4) Modify line 33 in the [Makefile](https://github.com/avezzu/caladan-aarch64/blob/main/Makefile) to the folder of the application you want to compile. For example, to build the UDP applications, you need to set:
+```
+test_src = $(wildcard caladan-bmarks/UDP/*.c)
+```
+
+5) Build the scheduler (IOKernel), the Caladan runtime, and Ksched and perform some machine setup.
 Before building, set the parameters in build/config (e.g., `CONFIG_SPDK=y` to use
 storage, `CONFIG_DIRECTPATH=y` to use directpath, and the MLX4 or MLX5 flags to use
 MLX4 or MLX5 NICs, respectively, ). To enable debugging, set `CONFIG_DEBUG=y` before building.
@@ -36,7 +41,7 @@ popd
 sudo ./scripts/setup_machine.sh
 ```
 
-5) Run Caladan with the following command. Depending on your hardware setup, the NIC-PCI address and the NUMA node may have to be adjusted.
+6) Run Caladan with the following command. Depending on your hardware setup, the NIC-PCI address and the NUMA node may have to be adjusted.
 
 ```
 ./start_caladan.sh
@@ -70,4 +75,11 @@ Run host RDMA process (when using RDMA, always start this process first):
 ```
 ./rdma_host <#threads>
 ```
+
+## Dealing with Failed Attempts
+The ported version sometimes encounters issues with applications that have excessive multithreaded overhead. If the overhead becomes too large, certain assertions in Caladan may fail. You can retry until a successful attempt or alternatively, you can change the optimization flag and recompile the project. To do this, modify line 45 in [shared.mk](https://github.com/avezzu/caladan-aarch64/blob/main/build/shared.mk) to:
+```
+FLAGS += -DNDEBUG -O0
+```
+
 
