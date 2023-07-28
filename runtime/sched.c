@@ -180,12 +180,6 @@ static void update_oldest_tsc(struct kthread *k)
 	thread_t *th;
 
 	assert_spin_lock_held(&k->lock);
-
-	/* find the oldest thread in the runqueue */
-	if (load_acquire(&k->rq_head) != k->rq_tail) {
-		th = k->rq[k->rq_tail % RUNTIME_RQ_SIZE];
-		ACCESS_ONCE(k->q_ptrs->oldest_tsc) = th->ready_tsc;
-	}
 }
 
 /* drain up to nr threads from k's runqueue into list l */
@@ -338,9 +332,6 @@ static __noreturn __noinline void schedule(void)
 		store_release(&__self->thread_running, false);
 		__self = NULL;
 	}
-
-	/* detect misuse of preempt disable */
-	BUG_ON((preempt_cnt & ~PREEMPT_NOT_PENDING) != 1);
 
 	/* update entry stat counters */
 	STAT(RESCHEDULES)++;
@@ -525,8 +516,6 @@ static __always_inline void enter_schedule(thread_t *curth)
 	ACCESS_ONCE(k->q_ptrs->rcu_gen) = k->rcu_gen;
 	assert((k->rcu_gen & 0x1) == 0x1);
 
-	/* check for misuse of preemption disabling */
-	BUG_ON((preempt_cnt & ~PREEMPT_NOT_PENDING) != 1);
 
 	/* check if we're switching into the same thread as before */
 	if (unlikely(th == curth)) {
@@ -573,9 +562,6 @@ void thread_park_and_preempt_enable(void)
 
 static void thread_ready_prepare(struct kthread *k, thread_t *th)
 {
-	/* check for misuse where a ready thread is marked ready again */
-	BUG_ON(th->thread_ready);
-
 	/* prepare thread to be runnable */
 	th->thread_ready = true;
 	th->ready_tsc = rdtsc();
