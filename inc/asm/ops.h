@@ -27,15 +27,9 @@ struct cpuid_info {
 
 static inline uint64_t rdtsc(void)
 {
-#if __GNUC_PREREQ(10, 0)
-#  if __has_builtin(__builtin_ia32_rdtsc)
-	return __builtin_ia32_rdtsc();
-#  endif
-#else
 	uint64_t val;
   	asm volatile("mrs %0, CNTVCT_EL0" : "=r" (val));
 	return val;
-#endif
 }
 
 static inline uint64_t rdtscp(uint32_t *auxp)
@@ -43,13 +37,7 @@ static inline uint64_t rdtscp(uint32_t *auxp)
 	uint64_t ret;
 	uint32_t c = 8;
 
-#if __GNUC_PREREQ(10, 0)
-#  if __has_builtin(__builtin_ia32_rdtscp)
-	ret = __builtin_ia32_rdtscp(&c);
-#  endif
-#else
   	asm volatile("mrs %0, CNTVCT_EL0" : "=r" (ret));
-#endif
 
 	if (auxp)
 		*auxp = c;
@@ -58,16 +46,6 @@ static inline uint64_t rdtscp(uint32_t *auxp)
 
 
 
-/*
-raspberry does not have support for crc32x
-uint64_t result;
-    asm("crc32x %w[result], %w[crc], %x[val]"
-        : [result] "=r" (result)
-        : [crc] "0" (crc), [val] "r" (val));
-
-    return result;
-
-*/
 static inline uint64_t __mm_crc32_u64(uint64_t crc, uint64_t val)
 {	
 	uint8_t bytes[8];
