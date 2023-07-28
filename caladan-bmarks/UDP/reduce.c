@@ -184,7 +184,7 @@ int main(int argc, char *argv[])
 
     if (argc < 6)
     {
-        printf("arg must be: [config_file] [mode] [#buf_size] [#amount_clients] [#amount_workes]\n");
+        printf("arg must be: [config_file] [mode] [#buffer_elements] [#amount_clients] [#amount_workes]\n");
         return -EINVAL;
     }
 
