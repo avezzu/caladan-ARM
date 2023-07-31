@@ -562,6 +562,8 @@ void thread_park_and_preempt_enable(void)
 
 static void thread_ready_prepare(struct kthread *k, thread_t *th)
 {
+	/* check for misuse where a ready thread is marked ready again */	
+	BUG_ON(th->thread_ready);
 	/* prepare thread to be runnable */
 	th->thread_ready = true;
 	th->ready_tsc = rdtsc();
