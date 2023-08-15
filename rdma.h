@@ -1,3 +1,7 @@
+/////////////////////////////////////////
+// SRC: https://github.com/jcarreira/firebox/blob/master/rdma/rdma_rc_example.c
+/////////////////////////////////////////
+
 #ifndef RDMA_H__
 #define RDMA_H__
 
