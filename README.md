@@ -2,7 +2,7 @@
 
 Caladan is a system that enables servers in datacenters to
 simultaneously provide low tail latency and high CPU efficiency, by
-rapidly reallocating cores across applications. This version is a version specified for ARM processors. The original version can be found [here](https://github.com/shenango/caladan). Not all functions of the original versions are supported.
+rapidly reallocating cores across applications. This version is a version specified for ARM processors. The original version can be found [here](https://github.com/shenango/caladan). Not all features available in the original versions are currently supported. This project constituted a significant component of my Bachelor's Thesis, which focused on analyzing the trade-offs in performance within SmartNIC architectures. If you're interested, you can access the full thesis document [here](https://doi.org/10.3929/ethz-b-000637586).
 
 ## Setup for Bluefield-2
 
